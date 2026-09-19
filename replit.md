@@ -1,6 +1,6 @@
-# [Project name]
+# DriverSafe
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A cinematic landing page for an AI-powered unsupervised drowsiness detection system.
 
 ## Run & Operate
 
@@ -22,15 +22,21 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/driversafe/src/App.tsx` — landing page, auth routes, and scroll reveal interactions
+- `artifacts/driversafe/src/index.css` — dark cinematic theme, glass pills, grid, marquee, and responsive styles
+- `artifacts/driversafe/src/main.tsx` — React entry point
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The first build is frontend-only; Login and Sign Up are local interaction screens until an authentication provider is connected.
+- GSAP ScrollTrigger handles the giant DriverSafe reveal and staggered footer content animation.
+- The landing page uses a dark-only #080b14 palette with reduced-motion support.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Cinematic DriverSafe landing experience
+- Scroll-triggered reveal of the product identity
+- Working Login and Sign Up entry points with local success states
 
 ## User preferences
 

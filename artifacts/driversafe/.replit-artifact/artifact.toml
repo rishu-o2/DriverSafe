@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "DriverSafe"
+description = "A cinematic landing page for DriverSafe, an AI-powered unsupervised drowsiness detection system that helps make every journey safer."
+version = "1.0.0"
+id = "artifacts/driversafe"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 26130
+
+[services.development]
+run = "pnpm --filter @workspace/driversafe run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/driversafe", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/driversafe/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26130"
+BASE_PATH = "/"

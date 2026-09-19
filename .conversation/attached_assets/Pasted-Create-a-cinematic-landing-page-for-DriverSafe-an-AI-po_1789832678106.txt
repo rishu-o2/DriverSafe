@@ -1,0 +1,76 @@
+Create a cinematic landing page for "DriverSafe" — an AI-powered 
+unsupervised drowsiness detection system — using the CinematicFooter 
+component structure provided.
+
+CHANGES FROM THE ORIGINAL COMPONENT:
+
+1. HERO SECTION (Main content area before scroll):
+   - Big centered text: "Scroll down to discover"
+   - Thin vertical line below it (like the original)
+   - Dark background #080b14
+   - Subtle radial gradient glow in center
+
+2. GIANT BACKGROUND TEXT (revealed on scroll):
+   - Change "SOBERS" → "DriverSafe"
+   - Same cinematic reveal animation on scroll
+
+3. HEADING (Big text in footer center):
+   - Change "Ready to begin?" → "DriverSafe"
+   - Keep the same footer-text-glow metallic effect
+   - Below it add a small subtitle:
+     "Unsupervised Drowsiness Detection System"
+     in muted color, smaller font size
+
+4. MARQUEE TEXT (scrolling ticker):
+   - Change items to:
+     "Drowsiness Detection" ✦ 
+     "Unsupervised Learning" ✦ 
+     "Real-Time Alerts" ✦ 
+     "Facial Anomaly Recognition" ✦ 
+     "Driver Safety AI" ✦
+
+5. PRIMARY BUTTONS (replace iOS/Android):
+   - Button 1: "Login" 
+     → same glass pill style
+     → icon: use a lock/key SVG icon
+     → href="/login"
+   - Button 2: "Sign Up"
+     → same glass pill style  
+     → icon: use a user/person SVG icon
+     → href="/signup"
+   - Keep same magnetic hover animation
+
+6. SECONDARY LINKS (replace Privacy/Terms/Support):
+   - Remove ALL secondary text links
+   - Keep only Login and Sign Up buttons
+   - Nothing else in that area
+
+7. BOTTOM BAR (replace Volvox credits):
+   - Remove "Made with Love by Volvox" badge completely
+   - Remove back-to-top button
+   - Keep ONLY:
+     "© 2026 Rishu. All Rights Reserved."
+     centered, same muted small text style
+   - Nothing else in bottom bar
+
+8. OVERALL STYLE:
+   - Dark theme only (#080b14 background)
+   - Keep ALL animations (breathe, marquee, heartbeat removed 
+     since love badge removed, scroll parallax)
+   - Keep glassmorphism pill style on buttons
+   - Keep grid background + aurora glow
+   - Keep GSAP scroll animations
+
+9. FILE STRUCTURE:
+   - Component: /components/ui/motion-footer.tsx 
+     (modify existing)
+   - Demo page: /app/page.tsx 
+     (this is the landing page)
+
+10. DEPENDENCIES NEEDED:
+    - gsap (already in install list)
+    - No other new dependencies
+
+KEEP EVERYTHING ELSE EXACTLY THE SAME AS ORIGINAL COMPONENT.
+Only change what is listed above. Do not add extra sections,
+extra links, extra badges, or extra content anywhere.
