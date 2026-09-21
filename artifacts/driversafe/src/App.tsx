@@ -5,8 +5,10 @@ import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { ArrowLeft, KeyRound, LockKeyhole, UserRound } from 'lucide-react';
 import { Link, Route, Router as WouterRouter, Switch, useLocation } from 'wouter';
 import { ErrorBoundary } from '@/components/error-boundary';
+import { WelcomeSequence } from '@/components/welcome-sequence';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import Dashboard from '@/pages/dashboard';
 import NotFound from '@/pages/not-found';
 
 const queryClient = new QueryClient();
@@ -144,12 +146,15 @@ function MagneticLink({
 }
 
 function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
+  const [, setLocation] = useLocation();
   const [submitted, setSubmitted] = useState(false);
   const isLogin = mode === 'login';
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    window.sessionStorage.setItem('driversafe-session', 'active');
     setSubmitted(true);
+    setLocation('/welcome');
   };
 
   return (
@@ -234,6 +239,9 @@ function Router() {
         <Route path="/signup">
           <AuthPage mode="signup" />
         </Route>
+        <Route path="/welcome" component={WelcomeSequence} />
+        <Route path="/dashboard/welcome" component={WelcomeSequence} />
+        <Route path="/dashboard" component={Dashboard} />
         <Route component={NotFound} />
       </Switch>
     </RoutedErrorBoundary>
