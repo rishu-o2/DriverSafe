@@ -1,0 +1,71 @@
+Create a post-login dashboard landing page for "DriverSafe" using 
+the MetroHero scroll-locked video hero component as the template.
+
+CHANGES FROM THE ORIGINAL COMPONENT:
+
+1. VIDEO:
+   - Replace the default city video with a dark, 
+     atmospheric driving/road video
+   - Use this free video URL:
+     https://cdn.coverr.co/videos/coverr-driving-on-a-highway-at-night-1613/1080p.mp4
+   - If that fails, use any dark night driving video from coverr.co
+
+2. TITLE (Big text shown before scrolling):
+   - Change "THE CITY OPENS" → "Welcome Back"
+   - Same font weight, same animation, same style
+
+3. SCROLL HINT:
+   - Change "SCROLL" → "SCROLL TO ENTER"
+   - Keep bouncing arrow animation
+
+4. TAGLINE (shown at end of scroll):
+   - Change "Every door in the city is already open."
+   - → "Your safety system is active and watching."
+   - Same blur-in animation at end of scroll
+
+5. SIGNATURE (bottom right):
+   - Change signature to:
+     name: "DriverSafe · INT396"
+     url: "#"
+   - Keep same subtle style
+
+6. PROGRESS BAR:
+   - Keep exactly as is
+   - White fill as video progresses
+
+7. AFTER SCROLL COMPLETES (when video ends):
+   - Instead of unlocking to normal page scroll
+   - Navigate to /dashboard route
+   - Use Next.js router: 
+     import { useRouter } from 'next/navigation'
+     router.push('/dashboard')
+   - Add this logic inside the useEffect where 
+     targetProgress >= 1 is detected
+
+8. ADD OVERLAY TEXT (bottom left, always visible):
+   - Small text showing:
+     "DriverSafe System"
+     "Status: Active"
+   - Style: same muted color as signature
+   - Position: bottom left
+   - Font: same system font
+
+9. REMOVE:
+   - Remove signature link (make it non-clickable plain text)
+   - Keep everything else exactly the same
+
+10. FILE:
+    - Save as: /components/ui/login-hero.tsx
+    - Use in: /app/dashboard/welcome/page.tsx
+    - Or use in: /app/(dashboard)/page.tsx
+
+11. PROPS TO PASS:
+    <LoginHero
+      title="Welcome Back"
+      scrollHint="SCROLL TO ENTER"
+      tagline="Your safety system is active and watching."
+      scrubDistance={3200}
+    />
+
+KEEP ALL ANIMATIONS, SCROLL LOCKING, VIDEO SCRUBBING 
+EXACTLY THE SAME AS ORIGINAL. Only change content listed above.
