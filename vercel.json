@@ -1,9 +1,11 @@
 {
+  "version": 2,
   "buildCommand": "pnpm --filter @workspace/driversafe run build",
   "outputDirectory": "frontend/dist/public",
   "installCommand": "pnpm install",
   "framework": null,
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
-  ]
+  ],
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- frontend/ pnpm-workspace.yaml pnpm-lock.yaml"
 }
