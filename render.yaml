@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: driversafe-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free
+
+    # Environment variables — set SECRET_KEY and FRONTEND_URL in the Render dashboard
+    envVars:
+      - key: ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"
+      # Set these in the Render dashboard (not committed to git):
+      # - key: SECRET_KEY
+      #   value: <your-strong-secret>
+      # - key: FRONTEND_URL
+      #   value: https://your-app.vercel.app
+
+    healthCheckPath: /health
