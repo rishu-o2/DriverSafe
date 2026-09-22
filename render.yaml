@@ -17,6 +17,6 @@ services:
       # - key: SECRET_KEY
       #   value: <your-strong-secret>
       # - key: FRONTEND_URL
-      #   value: https://your-app.vercel.app
+      #   value: https://driversafe.vercel.app
 
     healthCheckPath: /health
