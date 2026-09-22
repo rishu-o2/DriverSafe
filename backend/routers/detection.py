@@ -47,36 +47,39 @@ class Autoencoder(nn.Module):
             recon = self.forward(x)
             return torch.mean((x - recon) ** 2, dim=1)
 
-# Load real models and threshold on startup
-try:
-    _scaler = joblib.load(os.path.join(MODELS_DIR, "scaler.pkl"))
-    _iso_forest = joblib.load(os.path.join(MODELS_DIR, "isolation_forest.pkl"))
-    _lof = joblib.load(os.path.join(MODELS_DIR, "lof.pkl"))
-    
-    # Load PyTorch Autoencoder
-    _autoencoder = Autoencoder(input_dim=20)
-    _autoencoder.load_state_dict(torch.load(os.path.join(MODELS_DIR, "autoencoder.pt"), weights_only=True))
-    _autoencoder.eval()
-    
-    # Load threshold
-    with open(os.path.join(MODELS_DIR, "results.json")) as f:
-        _results = json.load(f)
-        _ae_threshold = _results.get("ae_threshold", 1.5)
-        
-    # Initialize MediaPipe extractor
-    _extractor = LandmarkExtractor()
-    
-    _MODELS_LOADED = True
-    print("[detection] Loaded real models and LandmarkExtractor.")
-except Exception as e:
-    print(f"[detection] Failed to load models or extractor: {e}. Falling back to mock detection.")
-    _MODELS_LOADED = False
-    _scaler = None
-    _iso_forest = None
-    _lof = None
-    _autoencoder = None
-    _extractor = None
-    _ae_threshold = 1.5
+# Models are lazy-loaded via load_models() called from FastAPI lifespan
+# to avoid OOM crashes on startup in memory-constrained environments (Render free = 512MB)
+_scaler = None
+_iso_forest = None
+_lof = None
+_autoencoder = None
+_extractor = None
+_ae_threshold = 1.5
+_MODELS_LOADED = False
+
+
+def load_models():
+    """Load all ML models once at app startup (called from main.py lifespan)."""
+    global _scaler, _iso_forest, _lof, _autoencoder, _extractor, _ae_threshold, _MODELS_LOADED
+    try:
+        _scaler = joblib.load(os.path.join(MODELS_DIR, "scaler.pkl"))
+        _iso_forest = joblib.load(os.path.join(MODELS_DIR, "isolation_forest.pkl"))
+        _lof = joblib.load(os.path.join(MODELS_DIR, "lof.pkl"))
+
+        ae = Autoencoder(input_dim=20)
+        ae.load_state_dict(torch.load(os.path.join(MODELS_DIR, "autoencoder.pt"), weights_only=True))
+        ae.eval()
+        _autoencoder = ae
+
+        with open(os.path.join(MODELS_DIR, "results.json")) as f:
+            _ae_threshold = json.load(f).get("ae_threshold", 1.5)
+
+        _extractor = LandmarkExtractor()
+        _MODELS_LOADED = True
+        print("[detection] Models and LandmarkExtractor loaded successfully.")
+    except Exception as e:
+        print(f"[detection] Failed to load models: {e}. Using mock detection.")
+        _MODELS_LOADED = False
 
 def process_features(frame_number: int, frame_features: np.ndarray) -> Dict[str, Any]:
     """Process exactly 20 features through the models."""

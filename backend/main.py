@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import auth, detection, clustering, metrics, alerts
@@ -6,7 +7,13 @@ import os
 
 load_dotenv()
 
-app = FastAPI(title="DriverSafe API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load ML models after uvicorn is up — avoids OOM on startup
+    detection.load_models()
+    yield
+
+app = FastAPI(title="DriverSafe API", lifespan=lifespan)
 
 origins = [
     os.getenv("FRONTEND_URL", "http://localhost:3000"),
