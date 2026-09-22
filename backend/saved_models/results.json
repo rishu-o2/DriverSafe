@@ -1,0 +1,56 @@
+{
+  "clustering": {
+    "silhouette": -0.069,
+    "davies_bouldin": 2.266,
+    "wcss": 18559.28,
+    "wcss_list": [
+      20000.0,
+      19160.76,
+      18559.28,
+      18121.09,
+      17744.72,
+      17423.79,
+      17161.17
+    ],
+    "optimal_k": 3
+  },
+  "detection": {
+    "f1_score": 0.537,
+    "roc_auc": 0.867,
+    "precision": 0.367,
+    "recall": 1.0
+  },
+  "confusion": {
+    "tp": 200,
+    "fp": 345,
+    "fn": 0,
+    "tn": 955
+  },
+  "ae_threshold": 1.483943,
+  "model_comparison": {
+    "autoencoder": {
+      "f1": 0.533,
+      "precision": 0.364,
+      "recall": 1.0,
+      "roc_auc": 0.865
+    },
+    "isolation_forest": {
+      "f1": 0.533,
+      "precision": 0.364,
+      "recall": 1.0,
+      "roc_auc": 0.865
+    },
+    "lof": {
+      "f1": 0.54,
+      "precision": 0.37,
+      "recall": 1.0,
+      "roc_auc": 0.869
+    },
+    "ensemble": {
+      "f1": 0.537,
+      "precision": 0.367,
+      "recall": 1.0,
+      "roc_auc": 0.867
+    }
+  }
+}
