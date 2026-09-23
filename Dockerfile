@@ -9,6 +9,11 @@ COPY ./backend/requirements.txt /code/backend/requirements.txt
 # Install dependencies
 RUN pip install --no-cache-dir --upgrade -r /code/backend/requirements.txt
 
+# MediaPipe pulls in opencv-python (non-headless) as a dependency.
+# Force replace it with headless variant so libGL.so.1 is never needed.
+RUN pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && \
+    pip install --no-cache-dir opencv-python-headless
+
 # Copy the rest of the backend code
 COPY ./backend /code/backend
 
