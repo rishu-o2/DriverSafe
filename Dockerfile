@@ -12,5 +12,5 @@ RUN pip install --no-cache-dir --upgrade -r /code/backend/requirements.txt
 # Copy the rest of the backend code
 COPY ./backend /code/backend
 
-# Railway automatically sets a PORT env var; default to 8000
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Railway injects PORT env var dynamically — use shell form so $PORT is expanded
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
