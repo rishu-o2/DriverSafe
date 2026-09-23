@@ -1,5 +1,11 @@
 FROM python:3.10-slim
 
+# Install system libraries required by OpenCV (even headless build needs these)
+RUN apt-get update && apt-get install -y \
+    libglib2.0-0 \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Set working directory to the backend folder inside the container
 WORKDIR /code/backend
 
