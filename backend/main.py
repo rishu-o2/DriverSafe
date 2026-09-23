@@ -16,7 +16,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="DriverSafe API", lifespan=lifespan)
 
 origins = [
-    os.getenv("FRONTEND_URL", "http://localhost:3000"),
+    os.getenv("FRONTEND_URL", "https://driversafe.vercel.app"),
+    "https://driversafe.vercel.app", # Explicitly allow production Vercel URL
+    "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
