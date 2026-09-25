@@ -48,7 +48,7 @@ class Autoencoder(nn.Module):
             return torch.mean((x - recon) ** 2, dim=1)
 
 # Models are lazy-loaded via load_models() called from FastAPI lifespan
-# to avoid OOM crashes on startup in memory-constrained environments (Render free = 512MB)
+# to avoid OOM crashes on startup in memory-constrained environments
 _scaler = None
 _iso_forest = None
 _lof = None

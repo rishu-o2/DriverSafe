@@ -20,6 +20,6 @@ RUN pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && 
 # Copy the backend code
 COPY . /code
 
-# Dynamic PORT support for Railway, Render, Hugging Face, or local Docker
+# Default port configuration
 ENV PORT=8000
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT}
