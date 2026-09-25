@@ -67,7 +67,7 @@ def load_models():
         _lof = joblib.load(os.path.join(MODELS_DIR, "lof.pkl"))
 
         ae = Autoencoder(input_dim=20)
-        ae.load_state_dict(torch.load(os.path.join(MODELS_DIR, "autoencoder.pt"), weights_only=True))
+        ae.load_state_dict(torch.load(os.path.join(MODELS_DIR, "autoencoder.pt"), map_location=torch.device('cpu'), weights_only=True))
         ae.eval()
         _autoencoder = ae
 

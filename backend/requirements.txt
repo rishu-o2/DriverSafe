@@ -2,15 +2,16 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+bcrypt<4.1.0
 python-dotenv>=1.0.0
+pandas>=2.2.0
 scikit-learn>=1.4.0
-numpy>=1.26.0
-# Use CPU-only PyTorch to save massive memory/disk space on Render free tier
+numpy>=1.26.0,<2.0.0
+# Use CPU-only PyTorch to save massive memory/disk space on Render/Railway free tier
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.2.0
-torchvision>=0.17.0
 joblib>=1.3.0
 mediapipe>=0.10.11
-# headless variant — no display server required (Render / Railway / Docker)
+# Headless OpenCV (no display server / libGL required)
 opencv-python-headless>=4.9.0
 pydantic>=2.0.0

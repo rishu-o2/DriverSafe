@@ -73,32 +73,32 @@ export const signup = async (name: string, email: string, password: string): Pro
 // --- Metrics Functions ---
 
 export interface ClusteringMetrics {
-  silhouette: float;
-  davies_bouldin: float;
-  wcss: float;
-  optimal_k: int;
-  wcss_list: float[];
+  silhouette: number;
+  davies_bouldin: number;
+  wcss: number;
+  optimal_k: number;
+  wcss_list: number[];
 }
 
 export interface DetectionMetrics {
-  f1_score: float;
-  roc_auc: float;
-  precision: float;
-  recall: float;
-  accuracy: float;
+  f1_score: number;
+  roc_auc: number;
+  precision: number;
+  recall: number;
+  accuracy: number;
 }
 
 export interface ConfusionMatrix {
-  true_positive: int;
-  false_positive: int;
-  false_negative: int;
-  true_negative: int;
+  true_positive: number;
+  false_positive: number;
+  false_negative: number;
+  true_negative: number;
 }
 
 export interface RocCurve {
-  fpr: float[];
-  tpr: float[];
-  auc: float;
+  fpr: number[];
+  tpr: number[];
+  auc: number;
 }
 
 export interface AllMetrics {

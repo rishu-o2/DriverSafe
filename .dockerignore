@@ -1,0 +1,31 @@
+# Ignore frontend and Node artifacts
+node_modules
+frontend
+lib
+scripts
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+tsconfig*.json
+.npmrc
+.vercel
+
+# Ignore Git and system files
+.git
+.gitignore
+.DS_Store
+Thumbs.db
+
+# Ignore Python cached files
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/.coverage
+**/venv
+**/.env*
+!**/.env.example
+
+# Ignore markdown documentation
+*.md

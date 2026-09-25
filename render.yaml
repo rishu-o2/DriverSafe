@@ -3,12 +3,14 @@ services:
     name: driversafe-api
     runtime: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && pip install --no-cache-dir opencv-python-headless
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
 
     # Environment variables — set SECRET_KEY and FRONTEND_URL in the Render dashboard
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.13
       - key: ALGORITHM
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES

@@ -65,6 +65,7 @@ function chartColors() {
     cyan: '#74eaff',
     mint: '#9be2d3',
     amber: '#e8c58b',
+    alert: '#ff6b6b',
     ice: '#e7eef5',
     muted: 'rgba(184, 207, 212, 0.48)',
     line: 'rgba(157, 211, 222, 0.16)',
