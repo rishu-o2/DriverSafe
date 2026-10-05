@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastapi",
+  "buildCommand": "python build.py",
+  "installCommand": null,
+  "outputDirectory": null,
+  "functions": {
+    "main.py": {
+      "maxDuration": 300,
+      "includeFiles": "saved_models/**"
+    }
+  }
+}
