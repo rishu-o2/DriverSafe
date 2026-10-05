@@ -5,7 +5,7 @@
   "installCommand": null,
   "outputDirectory": null,
   "functions": {
-    "main.py": {
+    "app.py": {
       "maxDuration": 300,
       "includeFiles": "saved_models/**"
     }
