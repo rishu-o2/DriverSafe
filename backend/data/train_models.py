@@ -110,8 +110,12 @@ def train_autoencoder(X_train_scaled):
         if (epoch + 1) % 20 == 0:
             print(f"  Epoch {epoch+1}/100 — Loss: {loss.item():.6f}")
 
-    torch.save(model.state_dict(),
-               os.path.join(MODELS_DIR, "autoencoder.pt"))
+    state_dict = model.state_dict()
+    torch.save(state_dict, os.path.join(MODELS_DIR, "autoencoder.pt"))
+    np.savez_compressed(
+        os.path.join(MODELS_DIR, "autoencoder.npz"),
+        **{name: tensor.detach().cpu().numpy() for name, tensor in state_dict.items()},
+    )
 
     # Compute threshold (95th percentile of training errors)
     model.eval()

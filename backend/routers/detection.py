@@ -1,8 +1,6 @@
 import os
 import joblib
 import json
-import torch
-import torch.nn as nn
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import numpy as np
 import asyncio
@@ -26,28 +24,25 @@ MODELS_DIR = os.path.join(BASE_DIR, "..", "saved_models")
 # Global Landmark Extractor
 _extractor = None
 
-# Autoencoder Architecture matching train_models.py
-class Autoencoder(nn.Module):
-    def __init__(self, input_dim=20):
-        super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, 16), nn.ReLU(),
-            nn.Linear(16, 12),        nn.ReLU(),
-            nn.Linear(12, 8),         nn.ReLU(),
-        )
-        self.decoder = nn.Sequential(
-            nn.Linear(8, 12),         nn.ReLU(),
-            nn.Linear(12, 16),        nn.ReLU(),
-            nn.Linear(16, input_dim),
-        )
+class Autoencoder:
+    """NumPy inference for the trained network; avoids bundling PyTorch."""
+    def __init__(self, weights):
+        self.layers = [
+            (weights["encoder.0.weight"], weights["encoder.0.bias"], True),
+            (weights["encoder.2.weight"], weights["encoder.2.bias"], True),
+            (weights["encoder.4.weight"], weights["encoder.4.bias"], True),
+            (weights["decoder.0.weight"], weights["decoder.0.bias"], True),
+            (weights["decoder.2.weight"], weights["decoder.2.bias"], True),
+            (weights["decoder.4.weight"], weights["decoder.4.bias"], False),
+        ]
 
-    def forward(self, x):
-        return self.decoder(self.encoder(x))
-
-    def reconstruction_error(self, x):
-        with torch.no_grad():
-            recon = self.forward(x)
-            return torch.mean((x - recon) ** 2, dim=1)
+    def reconstruction_error(self, values):
+        output = np.asarray(values, dtype=np.float32)
+        for weight, bias, use_relu in self.layers:
+            output = output @ weight.T + bias
+            if use_relu:
+                np.maximum(output, 0, out=output)
+        return np.mean(np.square(np.asarray(values, dtype=np.float32) - output), axis=1)
 
 # Models are lazy-loaded via load_models() called from FastAPI lifespan
 # to avoid OOM crashes on startup in memory-constrained environments
@@ -70,10 +65,8 @@ def load_models():
         _iso_forest = joblib.load(os.path.join(MODELS_DIR, "isolation_forest.pkl"))
         _lof = joblib.load(os.path.join(MODELS_DIR, "lof.pkl"))
 
-        ae = Autoencoder(input_dim=20)
-        ae.load_state_dict(torch.load(os.path.join(MODELS_DIR, "autoencoder.pt"), map_location=torch.device('cpu'), weights_only=True))
-        ae.eval()
-        _autoencoder = ae
+        weights = np.load(os.path.join(MODELS_DIR, "autoencoder.npz"))
+        _autoencoder = Autoencoder(weights)
 
         with open(os.path.join(MODELS_DIR, "results.json")) as f:
             _ae_threshold = json.load(f).get("ae_threshold", 1.5)
@@ -92,8 +85,7 @@ def process_features(frame_number: int, frame_features: np.ndarray) -> Dict[str,
     frame_scaled = _scaler.transform(frame_features.reshape(1, -1))
     
     # Autoencoder prediction
-    X_tensor = torch.FloatTensor(frame_scaled)
-    ae_error = float(_autoencoder.reconstruction_error(X_tensor).numpy()[0])
+    ae_error = float(_autoencoder.reconstruction_error(frame_scaled)[0])
     ae_alert = ae_error > _ae_threshold
     
     # Isolation Forest prediction
