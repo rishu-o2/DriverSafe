@@ -10,11 +10,11 @@ def main() -> None:
     # MediaPipe installs desktop OpenCV alongside the headless wheel. Remove
     # those conflicting packages, then restore the headless wheel explicitly.
     run(
-        "uv",
+        sys.executable,
+        "-m",
         "pip",
         "uninstall",
-        "--python",
-        sys.executable,
+        "-y",
         "opencv-python",
         "opencv-contrib-python",
         "opencv-python-headless",
@@ -22,11 +22,10 @@ def main() -> None:
         check=False,
     )
     run(
-        "uv",
+        sys.executable,
+        "-m",
         "pip",
         "install",
-        "--python",
-        sys.executable,
         "--no-deps",
         "opencv-python-headless>=4.9.0",
     )
