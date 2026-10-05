@@ -8,6 +8,9 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
 from sklearn.metrics import silhouette_score, davies_bouldin_score
 from typing import Dict, Any, List
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from utils.live_session import get_features
 
 router = APIRouter()
 
@@ -76,6 +79,37 @@ async def get_pca() -> Dict[str, Any]:
         "points": points,
         "variance_explained": [float(v) for v in pca.explained_variance_ratio_]
     }
+
+
+@router.get("/live")
+async def get_live_points() -> Dict[str, Any]:
+    """Project recent face landmarks from the active webcam session."""
+    features = get_features()
+    if not features:
+        return {"points": [], "count": 0}
+    X = np.asarray(features, dtype=float)
+    if _MODELS_LOADED:
+        X_scaled = _scaler.transform(X)
+        projected = _pca.transform(X_scaled)
+        labels = _kmeans.predict(X_scaled)
+    else:
+        if len(X) < 3:
+            return {"points": [], "count": 0}
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        projected = PCA(n_components=2).fit_transform(X_scaled)
+        labels = KMeans(n_clusters=3, random_state=42, n_init=10).fit_predict(X_scaled)
+    density_labels = DBSCAN(eps=0.8, min_samples=10).fit_predict(X_scaled)
+    points = [
+        {
+            "x": float(projected[i, 0]),
+            "y": float(projected[i, 1]),
+            "label": int(labels[i]),
+            "density_label": int(density_labels[i]),
+        }
+        for i in range(len(projected))
+    ]
+    return {"points": points, "count": len(points)}
 
 @router.get("/kmeans")
 async def get_kmeans() -> Dict[str, Any]:
@@ -165,4 +199,3 @@ async def get_validation() -> Dict[str, Any]:
     res = await get_kmeans()
     res["wcss_list"] = res.get("elbow", [])
     return res
-

@@ -22,7 +22,7 @@ class AlertLogger:
         with open(self.filepath, 'w') as f:
             json.dump(alerts, f, indent=4)
             
-    def log_alert(self, frame: int, state: str, scores: Dict[str, float]):
+    def log_alert(self, frame: int, state: str, scores: Dict[str, Any]):
         alerts = self._read_alerts()
         new_alert = {
             "id": len(alerts) + 1,
@@ -33,7 +33,8 @@ class AlertLogger:
             "if_score": scores.get("if_score", 0.0),
             "lof": scores.get("lof", 0.0),
             "confidence": scores.get("confidence", 1.0),
-            "models": scores.get("models", [])
+            "models": scores.get("models", ["AE", "IF", "LOF"]),
+            "votes": scores.get("votes", 0)
         }
         alerts.append(new_alert)
         self._write_alerts(alerts)

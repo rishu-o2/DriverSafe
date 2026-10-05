@@ -1,41 +1,41 @@
-from fastapi import APIRouter
-from typing import Dict, Any, List
-import datetime
+﻿from fastapi import APIRouter
+from typing import Any, Dict
+import os
+import sys
+from datetime import datetime
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from utils.alert_logger import AlertLogger
+from utils.live_session import get_stats
 
 router = APIRouter()
+_logger = AlertLogger(os.path.join(os.path.dirname(__file__), "..", "data", "alerts", "alerts.json"))
 
-MOCK_ALERTS = [
-    {"id": 1, "timestamp": (datetime.datetime.now() - datetime.timedelta(minutes=50)).isoformat(), "state": "Yawn", "ae_error": 0.82, "if_score": 0.65, "lof": 1.6, "confidence": 0.88, "models": ["AE", "IF", "LOF"]},
-    {"id": 2, "timestamp": (datetime.datetime.now() - datetime.timedelta(minutes=40)).isoformat(), "state": "Drowsy", "ae_error": 0.91, "if_score": 0.72, "lof": 1.8, "confidence": 0.94, "models": ["AE", "IF", "LOF"]},
-    {"id": 3, "timestamp": (datetime.datetime.now() - datetime.timedelta(minutes=30)).isoformat(), "state": "Drowsy", "ae_error": 0.78, "if_score": 0.61, "lof": 1.4, "confidence": 0.79, "models": ["AE", "IF"]},
-    {"id": 4, "timestamp": (datetime.datetime.now() - datetime.timedelta(minutes=20)).isoformat(), "state": "Yawn", "ae_error": 0.85, "if_score": 0.68, "lof": 1.7, "confidence": 0.89, "models": ["AE", "IF", "LOF"]},
-    {"id": 5, "timestamp": (datetime.datetime.now() - datetime.timedelta(minutes=10)).isoformat(), "state": "Drowsy", "ae_error": 0.88, "if_score": 0.55, "lof": 1.9, "confidence": 0.85, "models": ["AE", "LOF"]},
-    {"id": 6, "timestamp": datetime.datetime.now().isoformat(), "state": "Drowsy", "ae_error": 0.95, "if_score": 0.75, "lof": 2.1, "confidence": 0.97, "models": ["AE", "IF", "LOF"]},
-]
 
 @router.get("/history")
 async def get_alerts_history() -> Dict[str, Any]:
-    return {
-        "total": len(MOCK_ALERTS),
-        "alerts": MOCK_ALERTS
-    }
+    alerts = _logger.get_history()
+    return {"total": len(alerts), "alerts": list(reversed(alerts))}
+
 
 @router.get("/stats")
 async def get_alerts_stats() -> Dict[str, Any]:
+    alerts = _logger.get_history()
+    session = get_stats()
+    frames = session["total_frames"]
+    started_at = datetime.fromisoformat(session["session_started_at"])
+    session_alerts = [a for a in alerts if datetime.fromisoformat(a["timestamp"]) >= started_at]
+    duration_minutes = session["session_seconds"] / 60
     return {
-        "total_frames": 3842,
-        "alert_frames": 3795,
-        "drowsy_alerts": 31,
-        "yawn_alerts": 16,
-        "session_duration": "64 min",
-        "alert_rate": "1.2%"
+        "total_frames": frames,
+        "alert_frames": session["alert_frames"],
+        "drowsy_alerts": sum(1 for a in session_alerts if a.get("state", "").lower() == "drowsy"),
+        "yawn_alerts": sum(1 for a in session_alerts if a.get("state", "").lower() == "yawn"),
+        "session_duration": f"{duration_minutes:.1f} min",
+        "alert_rate": f"{(session['alert_frames'] / max(frames, 1) * 100):.1f}%",
     }
+
 
 @router.get("/export")
 async def export_alerts_csv() -> str:
-    header = "id,timestamp,state,ae_error,if_score,lof,confidence,models\n"
-    rows = []
-    for alert in MOCK_ALERTS:
-        models_str = "|".join(alert["models"])
-        rows.append(f"{alert['id']},{alert['timestamp']},{alert['state']},{alert['ae_error']},{alert['if_score']},{alert['lof']},{alert['confidence']},{models_str}")
-    return header + "\n".join(rows)
+    return _logger.export_csv()

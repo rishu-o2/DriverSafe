@@ -15,6 +15,8 @@ import sys
 # Add parent directory to path to allow importing from utils if running from different cwd
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from utils.landmark_extractor import LandmarkExtractor
+from utils.live_session import record_frame
+from utils.alert_logger import AlertLogger
 
 router = APIRouter()
 
@@ -56,12 +58,14 @@ _autoencoder = None
 _extractor = None
 _ae_threshold = 1.5
 _MODELS_LOADED = False
+_alert_logger = AlertLogger(os.path.join(BASE_DIR, "data", "alerts", "alerts.json"))
 
 
 def load_models():
     """Load all ML models once at app startup (called from main.py lifespan)."""
     global _scaler, _iso_forest, _lof, _autoencoder, _extractor, _ae_threshold, _MODELS_LOADED
     try:
+        _extractor = LandmarkExtractor()
         _scaler = joblib.load(os.path.join(MODELS_DIR, "scaler.pkl"))
         _iso_forest = joblib.load(os.path.join(MODELS_DIR, "isolation_forest.pkl"))
         _lof = joblib.load(os.path.join(MODELS_DIR, "lof.pkl"))
@@ -74,7 +78,6 @@ def load_models():
         with open(os.path.join(MODELS_DIR, "results.json")) as f:
             _ae_threshold = json.load(f).get("ae_threshold", 1.5)
 
-        _extractor = LandmarkExtractor()
         _MODELS_LOADED = True
         print("[detection] Models and LandmarkExtractor loaded successfully.")
     except Exception as e:
@@ -112,6 +115,12 @@ def process_features(frame_number: int, frame_features: np.ndarray) -> Dict[str,
         "lof_score": round(float(lof_score_raw), 3),
         "is_drowsy": bool(is_drowsy),
         "votes": int(votes),
+        "confidence": round(votes / 3, 3),
+        "model_alerts": {
+            "autoencoder": bool(ae_alert),
+            "isolation_forest": bool(if_alert),
+            "lof": bool(lof_alert),
+        },
         "face_detected": True
     }
 
@@ -136,6 +145,12 @@ def process_frame_mock(frame_number: int) -> Dict[str, Any]:
         "lof_score": round(lof_score, 3),
         "is_drowsy": bool(is_drowsy),
         "votes": int(votes),
+        "confidence": round(votes / 3, 3),
+        "model_alerts": {
+            "autoencoder": bool(ae_alert),
+            "isolation_forest": bool(if_alert),
+            "lof": bool(lof_alert),
+        },
         "face_detected": True
     }
 
@@ -154,6 +169,7 @@ async def get_mock_detection(frame: int) -> Dict[str, Any]:
 async def detection_websocket(websocket: WebSocket):
     await websocket.accept()
     frame_count = 0
+    was_alerting = False
     try:
         while True:
             # Receive base64 string from frontend
@@ -161,12 +177,6 @@ async def detection_websocket(websocket: WebSocket):
             data = await websocket.receive_text()
             frame_count += 1
             
-            if not _MODELS_LOADED:
-                # Fallback to simulated if ML isn't working
-                result = process_frame_mock(frame_count)
-                await websocket.send_json(result)
-                continue
-                
             try:
                 # Decode base64 image
                 header, encoded = data.split(",", 1) if "," in data else ("", data)
@@ -175,11 +185,15 @@ async def detection_websocket(websocket: WebSocket):
                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                 
                 # Extract landmarks
-                features = _extractor.extract(img)
+                features = _extractor.extract(img) if img is not None and _extractor else None
                 
                 if features is not None and len(features) == 20:
                     # Face detected, process features
                     result = process_features(frame_count, features)
+                    record_frame(features, result["is_drowsy"])
+                    if result["is_drowsy"] and not was_alerting:
+                        _alert_logger.log_alert(frame_count, "DROWSY", result)
+                    was_alerting = result["is_drowsy"]
                 else:
                     # No face detected
                     result = {
@@ -191,6 +205,8 @@ async def detection_websocket(websocket: WebSocket):
                         "votes": 0,
                         "face_detected": False
                     }
+                    record_frame()
+                    was_alerting = False
                 
                 await websocket.send_json(result)
             except Exception as e:
@@ -208,4 +224,3 @@ async def detection_websocket(websocket: WebSocket):
                 
     except WebSocketDisconnect:
         print("Client disconnected from detection websocket")
-

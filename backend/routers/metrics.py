@@ -34,12 +34,6 @@ _FALLBACK = {
         "wcss_list":      [820.0, 510.0, 284.0, 220.0, 180.0, 155.0, 138.0],
         "optimal_k":      3,
     },
-    "detection": {
-        "f1_score":  0.87,
-        "roc_auc":   0.91,
-        "precision": 0.83,
-        "recall":    0.89,
-    },
     "confusion": {
         "true_positive":  312,
         "false_positive": 18,
@@ -76,13 +70,15 @@ async def get_clustering_metrics() -> dict:
 
 @router.get("/detection")
 async def get_detection_metrics() -> dict:
-    d = _get("detection") or _FALLBACK["detection"]
+    d = _get("detection")
+    if not d:
+        return {"f1_score": None, "roc_auc": None, "precision": None, "recall": None, "accuracy": None}
     return {
-        "f1_score":  d.get("f1_score",  _FALLBACK["detection"]["f1_score"]),
-        "roc_auc":   d.get("roc_auc",   _FALLBACK["detection"]["roc_auc"]),
-        "precision": d.get("precision", _FALLBACK["detection"]["precision"]),
-        "recall":    d.get("recall",    _FALLBACK["detection"]["recall"]),
-        "accuracy":  0.94,  # kept for frontend compatibility
+        "f1_score": d.get("f1_score"),
+        "roc_auc": d.get("roc_auc"),
+        "precision": d.get("precision"),
+        "recall": d.get("recall"),
+        "accuracy": None,
     }
 
 

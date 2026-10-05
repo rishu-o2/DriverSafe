@@ -1,83 +1,99 @@
+﻿import cv2
 import mediapipe as mp
 import numpy as np
-from typing import Optional, List, Tuple
-import cv2
+from typing import List, Optional
+
 
 class LandmarkExtractor:
+    """Convert MediaPipe face landmarks into the 20 features used by training."""
+
     def __init__(self):
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
+        self.face_mesh = mp.solutions.face_mesh.FaceMesh(
             static_image_mode=False,
             max_num_faces=1,
             refine_landmarks=True,
             min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
+            min_tracking_confidence=0.5,
         )
-        
-        # 20 key landmarks relevant to drowsiness
-        self.key_landmarks_indices = [
-            33, 133, 362, 263, # Outer/inner eye corners
-            159, 145, 386, 374, # Upper/lower eye lids
-            13, 14, 78, 308, # Mouth inner/outer
-            1, 2, 4, 5, # Nose area
-            70, 105, 300, 334 # Eyebrows
-        ]
-        
+
+    @staticmethod
+    def _distance(a: np.ndarray, b: np.ndarray) -> float:
+        return float(np.linalg.norm(a - b))
+
+    @staticmethod
+    def _unit(value: float) -> float:
+        return float(np.clip(value, 0.0, 1.0))
+
     def extract(self, frame: np.ndarray) -> Optional[np.ndarray]:
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb_frame)
-        
-        if not results.multi_face_landmarks:
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = self.face_mesh.process(rgb)
+        if not result.multi_face_landmarks:
             return None
-            
-        landmarks = results.multi_face_landmarks[0]
-        
-        # Get coordinates for all 468 landmarks
-        h, w, _ = frame.shape
-        coords = np.array([(lm.x * w, lm.y * h) for lm in landmarks.landmark])
-        
-        # Extract 20 key landmarks
-        key_coords = coords[self.key_landmarks_indices]
-        
-        # Normalize: nose-centered
-        nose_coord = coords[1] # Tip of nose
-        centered = key_coords - nose_coord
-        
-        # Normalize: scale by inter-ocular distance (distance between outer eye corners)
-        outer_left = coords[33]
-        outer_right = coords[263]
-        iod = np.linalg.norm(outer_left - outer_right)
-        
-        if iod > 0:
-            normalized = centered / iod
-        else:
-            normalized = centered
-            
-        # Flatten to (20,) or keep as (20, 2)? Prompt asks for (20,) so let's just take y-coordinates or flatten.
-        # Actually prompt says "Return numpy array of shape (20,)", which implies 1D array of 20 features (e.g. distances or just x or y).
-        # Let's return the y-coordinates to make it exactly shape (20,)
-        return normalized[:, 1]
-        
+
+        landmarks = result.multi_face_landmarks[0].landmark
+        height, width = frame.shape[:2]
+        points = np.asarray([(point.x * width, point.y * height) for point in landmarks], dtype=np.float32)
+        if len(points) < 468:
+            return None
+
+        # Eye Aspect Ratios use the same corner and lid landmarks at both eyes.
+        left_width = max(self._distance(points[33], points[133]), 1e-6)
+        right_width = max(self._distance(points[362], points[263]), 1e-6)
+        left_ear = (self._distance(points[160], points[144]) + self._distance(points[158], points[153])) / (2 * left_width)
+        right_ear = (self._distance(points[385], points[380]) + self._distance(points[387], points[373])) / (2 * right_width)
+        avg_ear = (left_ear + right_ear) / 2
+
+        mouth_width = max(self._distance(points[78], points[308]), 1e-6)
+        mar = self._distance(points[13], points[14]) / mouth_width
+        eye_mid = (points[33] + points[263]) / 2
+        nose = points[1]
+        chin = points[152]
+        face_height = max(float(chin[1] - eye_mid[1]), 1e-6)
+        eye_span = max(float(points[263][0] - points[33][0]), 1e-6)
+
+        # Refined Face Mesh includes iris centers (468 and 473).
+        left_iris = points[468] if len(points) > 468 else (points[33] + points[133]) / 2
+        right_iris = points[473] if len(points) > 473 else (points[362] + points[263]) / 2
+        left_brow_gap = self._distance(points[105], points[159]) / left_width
+        right_brow_gap = self._distance(points[334], points[386]) / right_width
+        eye_line_angle = np.arctan2(float(points[263][1] - points[33][1]), eye_span)
+        nose_center_offset = (float(nose[0] - eye_mid[0])) / eye_span
+        nose_y_ratio = (float(nose[1]) - float(eye_mid[1])) / face_height
+
+        # Keep feature order aligned with backend/data/generate_dataset.py.
+        features = np.asarray([
+            left_ear,
+            right_ear,
+            avg_ear,
+            mar,
+            1.0 - min(left_brow_gap * 0.5, 1.0),
+            1.0 - min(right_brow_gap * 0.5, 1.0),
+            abs(float(eye_line_angle)),
+            abs(nose_center_offset),
+            nose_y_ratio,
+            0.1 + 0.8 * self._unit((float(left_iris[0]) - float(points[33][0])) / eye_span),
+            self._unit((float(left_iris[1]) - float(eye_mid[1])) / face_height + 0.48),
+            0.1 + 0.8 * self._unit((float(right_iris[0]) - float(points[33][0])) / eye_span),
+            self._unit((float(right_iris[1]) - float(eye_mid[1])) / face_height + 0.48),
+            mar,
+            left_ear * 2.5,
+            right_ear * 2.5,
+            (float(points[78][0]) - float(points[33][0])) / eye_span,
+            (float(points[308][0]) - float(points[33][0])) / eye_span,
+            (1.0 - min((left_brow_gap + right_brow_gap) * 0.25, 1.0)),
+            nose_y_ratio,
+        ], dtype=np.float32)
+        return np.clip(features, 0.0, 1.0)
+
     def extract_from_video(self, path: str) -> List[np.ndarray]:
-        cap = cv2.VideoCapture(path)
+        capture = cv2.VideoCapture(path)
         features = []
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
+        while capture.isOpened():
+            ok, frame = capture.read()
+            if not ok:
                 break
-                
-            lm = self.extract(frame)
-            if lm is not None:
-                features.append(lm)
-                
-        cap.release()
+            landmarks = self.extract(frame)
+            if landmarks is not None:
+                features.append(landmarks)
+        capture.release()
         return features
-        
-    def compute_ear(self, landmarks: np.ndarray) -> float:
-        # Assuming input is full 468 landmarks or specific ones. 
-        # Using placeholder calculation as index mapping depends on full coords.
-        return 0.3
-        
-    def compute_mar(self, landmarks: np.ndarray) -> float:
-        return 0.5

@@ -81,11 +81,11 @@ export interface ClusteringMetrics {
 }
 
 export interface DetectionMetrics {
-  f1_score: number;
-  roc_auc: number;
-  precision: number;
-  recall: number;
-  accuracy: number;
+  f1_score: number | null;
+  roc_auc: number | null;
+  precision: number | null;
+  recall: number | null;
+  accuracy: number | null;
 }
 
 export interface ConfusionMatrix {
@@ -144,6 +144,7 @@ export interface Alert {
   lof: number;
   confidence: number;
   models: string[];
+  frame?: number;
 }
 
 export interface AlertHistoryResponse {
@@ -198,6 +199,12 @@ export interface Point2D {
   x: number;
   y: number;
   label: number;
+  density_label?: number;
+}
+
+export interface LiveClusterResponse {
+  points: Point2D[];
+  count: number;
 }
 
 export interface PCAResponse {
@@ -234,6 +241,11 @@ export const getPCA = async (): Promise<PCAResponse> => {
   return handleResponse(response);
 };
 
+export const getLiveClusters = async (): Promise<LiveClusterResponse> => {
+  const response = await fetch(`${BASE_URL}/api/cluster/live`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
 export const getHierarchical = async (): Promise<HierarchicalResponse> => {
   const response = await fetch(`${BASE_URL}/api/cluster/hierarchical`, { headers: getHeaders() });
   return handleResponse(response);
@@ -258,6 +270,9 @@ export interface MockFrameResponse {
   lof_score: number;
   is_drowsy: boolean;
   votes: number;
+  face_detected?: boolean;
+  confidence?: number;
+  model_alerts?: { autoencoder: boolean; isolation_forest: boolean; lof: boolean };
 }
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
@@ -278,7 +293,8 @@ export class DetectionWebSocket {
   connect(
     onMessage: (data: MockFrameResponse) => void,
     onError: (error: Event) => void,
-    onClose: (event: CloseEvent) => void
+    onClose: (event: CloseEvent) => void,
+    onOpen?: () => void
   ): void {
     if (this.ws) {
       this.disconnect();
@@ -287,6 +303,7 @@ export class DetectionWebSocket {
     // Convert http(s) URL to ws(s) if VITE_WS_URL wasn't provided properly
     const wsUrl = `${WS_URL}/api/detection/ws`;
     this.ws = new WebSocket(wsUrl);
+    this.ws.onopen = () => onOpen?.();
 
     this.ws.onmessage = (event) => {
       try {
