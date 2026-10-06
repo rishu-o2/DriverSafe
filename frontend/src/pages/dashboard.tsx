@@ -31,6 +31,7 @@ import {
 import { Link, useLocation } from 'wouter';
 import { useMetrics, useAlerts, useClustering, useDetection, useLiveClusters } from '../hooks/useApi';
 import { exportAlerts, removeToken } from '../lib/api';
+import { createFaceLandmarker, extractFaceFeatures } from '../lib/face-landmarks';
 
 type DashboardView = 'live' | 'cluster' | 'metrics' | 'history' | 'settings';
 
@@ -234,10 +235,26 @@ function LiveMonitor() {
   const colors = chartColors();
   const [reconstructionData, setReconstructionData] = useState<Array<{ frame: number, error: number }>>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const landmarkerRef = useRef<Awaited<ReturnType<typeof createFaceLandmarker>> | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const { data: metrics } = useMetrics();
+
+  useEffect(() => {
+    let active = true;
+    createFaceLandmarker()
+      .then((landmarker) => {
+        if (active) landmarkerRef.current = landmarker;
+      })
+      .catch((error) => {
+        console.error('Failed to load the face landmark model:', error);
+        setCameraError('Could not load the face landmark model');
+      });
+    return () => {
+      active = false;
+      landmarkerRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -277,18 +294,12 @@ function LiveMonitor() {
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      if (isConnected && cameraActive && videoRef.current && canvasRef.current) {
+      if (isConnected && cameraActive && videoRef.current && landmarkerRef.current) {
         const video = videoRef.current;
-        const canvas = canvasRef.current;
         if (video.videoWidth > 0 && video.videoHeight > 0) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const base64Data = canvas.toDataURL('image/jpeg', 0.5); 
-            sendFrame(base64Data);
-          }
+          const result = landmarkerRef.current.detectForVideo(video, performance.now());
+          const features = extractFaceFeatures(result.faceLandmarks[0], video.videoWidth, video.videoHeight);
+          sendFrame(JSON.stringify({ face_detected: Boolean(features), features }));
         }
       }
     }, 250);
@@ -347,8 +358,6 @@ function LiveMonitor() {
                   muted 
                   style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '12px', display: cameraActive ? 'block' : 'none' }}
                 />
-                <canvas ref={canvasRef} style={{ display: 'none' }} />
-                
                 {!cameraActive && (
                   <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '0 16px' }}>
                     <Camera aria-hidden="true" style={{ marginBottom: '8px', color: cameraError ? '#e8c58b' : 'inherit' }} />

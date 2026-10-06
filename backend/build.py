@@ -1,34 +1,13 @@
-import subprocess
-import sys
-
-
-def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(args, check=check)
+from pathlib import Path
 
 
 def main() -> None:
-    # MediaPipe installs desktop OpenCV alongside the headless wheel. Remove
-    # those conflicting packages, then restore the headless wheel explicitly.
-    run(
-        sys.executable,
-        "-m",
-        "pip",
-        "uninstall",
-        "-y",
-        "opencv-python",
-        "opencv-contrib-python",
-        "opencv-python-headless",
-        "opencv-contrib-python-headless",
-        check=False,
-    )
-    run(
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--no-deps",
-        "opencv-python-headless>=4.9.0",
-    )
+    model_dir = Path(__file__).parent / "saved_models"
+    required = ("runtime_models.npz", "autoencoder.npz", "results.json")
+    missing = [name for name in required if not (model_dir / name).is_file()]
+    if missing:
+        raise SystemExit(f"Missing production model artifacts: {', '.join(missing)}")
+    print("Verified compact NumPy inference artifacts.")
 
 
 if __name__ == "__main__":

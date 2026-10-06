@@ -153,6 +153,43 @@ def train_lof(X_train_scaled):
     print("LOF saved")
     return lof
 
+
+def export_runtime_models(scaler, pca, kmeans, iso_forest, lof):
+    """Export fitted estimators to compact arrays used by NumPy-only runtime."""
+    trees = [estimator.tree_ for estimator in iso_forest.estimators_]
+    max_nodes = max(tree.node_count for tree in trees)
+    n_trees = len(trees)
+    left = np.full((n_trees, max_nodes), -1, dtype=np.int32)
+    right = np.full((n_trees, max_nodes), -1, dtype=np.int32)
+    features = np.full((n_trees, max_nodes), -2, dtype=np.int32)
+    thresholds = np.zeros((n_trees, max_nodes), dtype=np.float32)
+    samples = np.zeros((n_trees, max_nodes), dtype=np.int32)
+    node_counts = np.zeros(n_trees, dtype=np.int32)
+    for index, tree in enumerate(trees):
+        count = tree.node_count
+        left[index, :count] = tree.children_left
+        right[index, :count] = tree.children_right
+        features[index, :count] = tree.feature
+        thresholds[index, :count] = tree.threshold
+        samples[index, :count] = tree.n_node_samples
+        node_counts[index] = count
+
+    np.savez_compressed(
+        os.path.join(MODELS_DIR, "runtime_models.npz"),
+        scaler_mean=scaler.mean_, scaler_scale=scaler.scale_,
+        pca_mean=pca.mean_, pca_components=pca.components_,
+        pca_variance=pca.explained_variance_ratio_,
+        kmeans_centers=kmeans.cluster_centers_, kmeans_inertia=kmeans.inertia_,
+        forest_left=left, forest_right=right, forest_features=features,
+        forest_thresholds=thresholds, forest_samples=samples,
+        forest_node_counts=node_counts, forest_offset=iso_forest.offset_,
+        forest_max_samples=iso_forest.max_samples_,
+        lof_fit_X=lof._fit_X, lof_training_lrd=lof._lrd,
+        lof_training_kdist=lof._distances_fit_X_[:, -1],
+        lof_n_neighbors=lof.n_neighbors_, lof_offset=lof.offset_,
+    )
+    print("NumPy runtime models exported")
+
 # ─── Train Clustering Models ─────────────────────────────
 def train_clustering(X_train_scaled, X_full_scaled, y_full):
     print("\nTraining Clustering models...")
@@ -321,6 +358,7 @@ def main():
     clustering = train_clustering(
         X_train_scaled, X_full_scaled, y_full
     )
+    export_runtime_models(scaler, pca, clustering["kmeans"], iso_forest, lof)
 
     # Evaluate
     eval_results = evaluate_models(

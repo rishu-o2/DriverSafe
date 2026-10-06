@@ -1,201 +1,154 @@
+import csv
 import os
-import joblib
-import pandas as pd
-from fastapi import APIRouter
+from typing import Any, Dict
+
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
-from sklearn.metrics import silhouette_score, davies_bouldin_score
-from typing import Dict, Any, List
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from fastapi import APIRouter
+
 from utils.live_session import get_features
+from utils.numpy_ml import (
+    agglomerative_ward,
+    davies_bouldin_score,
+    dbscan,
+    kmeans_fit,
+    kmeans_predict,
+    pca_transform,
+    silhouette_score,
+    standardize,
+)
 
 router = APIRouter()
-
 BASE_DIR = os.path.dirname(__file__)
 MODELS_DIR = os.path.join(BASE_DIR, "..", "saved_models")
-DATA_DIR = os.path.join(BASE_DIR, "..", "data", "landmarks")
+DATA_PATH = os.path.join(BASE_DIR, "..", "data", "landmarks", "full_dataset.csv")
 
-# Load real models and data on startup
 try:
-    _scaler = joblib.load(os.path.join(MODELS_DIR, "scaler.pkl"))
-    _pca = joblib.load(os.path.join(MODELS_DIR, "pca.pkl"))
-    _kmeans = joblib.load(os.path.join(MODELS_DIR, "kmeans.pkl"))
-    
-    _full_df = pd.read_csv(os.path.join(DATA_DIR, "full_dataset.csv"))
-    feature_cols = [c for c in _full_df.columns if c not in ["label", "label_name"]]
-    _X_real = _full_df[feature_cols].values
-    _true_labels_real = _full_df["label"].values
-    
+    _models = np.load(os.path.join(MODELS_DIR, "runtime_models.npz"))
     _MODELS_LOADED = True
-    print("[clustering] Loaded real models and data.")
-except Exception as e:
-    print(f"[clustering] Failed to load models or data: {e}. Falling back to synthetic mock data.")
+except Exception as exc:
+    print(f"[clustering] Runtime models unavailable: {exc}; clustering will fit from session data.")
+    _models = None
     _MODELS_LOADED = False
-    _scaler = None
-    _pca = None
-    _kmeans = None
-    _X_real = None
-    _true_labels_real = None
 
-# Fallback synthetic data
-np.random.seed(42)
-alert_frames = np.random.normal(loc=0.3, scale=0.05, size=(350, 20))
-transition_frames = np.random.normal(loc=0.2, scale=0.08, size=(100, 20))
-drowsy_frames = np.random.normal(loc=0.1, scale=0.06, size=(50, 20))
+try:
+    with open(DATA_PATH, newline="", encoding="utf-8") as data_file:
+        rows = list(csv.DictReader(data_file))
+    _feature_columns = [name for name in rows[0] if name not in ("label", "label_name")]
+    _X_real = np.asarray([[float(row[name]) for name in _feature_columns] for row in rows], dtype=np.float64)
+    _true_labels_real = np.asarray([int(row["label"]) for row in rows], dtype=int)
+    _DATA_LOADED = True
+except Exception as exc:
+    print(f"[clustering] Dataset unavailable: {exc}; using generated demonstration points.")
+    _DATA_LOADED = False
+    rng = np.random.default_rng(42)
+    _X_real = np.vstack((
+        rng.normal(0.3, 0.05, (350, 20)),
+        rng.normal(0.2, 0.08, (100, 20)),
+        rng.normal(0.1, 0.06, (50, 20)),
+    ))
+    _true_labels_real = np.array([0] * 350 + [1] * 100 + [2] * 50)
 
-X_mock = np.vstack([alert_frames, transition_frames, drowsy_frames])
-true_labels_mock = np.array([0]*350 + [1]*100 + [2]*50)
 
-def get_data():
+def _scaled(values: np.ndarray) -> np.ndarray:
     if _MODELS_LOADED:
-        return _X_real, _true_labels_real
-    return X_mock, true_labels_mock
+        return standardize(values, _models["scaler_mean"], _models["scaler_scale"])
+    mean = values.mean(axis=0)
+    scale = values.std(axis=0)
+    scale[scale == 0] = 1.0
+    return standardize(values, mean, scale)
+
+
+def _project(values: np.ndarray) -> tuple[np.ndarray, list[float]]:
+    scaled = _scaled(values)
+    if _MODELS_LOADED:
+        points = pca_transform(scaled, _models["pca_mean"], _models["pca_components"])
+        variance = _models["pca_variance"].tolist()
+    else:
+        centered = scaled - scaled.mean(axis=0)
+        _, singular_values, right = np.linalg.svd(centered, full_matrices=False)
+        points = centered @ right[:2].T
+        variance = (singular_values[:2] ** 2 / max(float(np.sum(singular_values ** 2)), 1e-12)).tolist()
+    return points, [float(value) for value in variance]
+
 
 @router.get("/pca")
 async def get_pca() -> Dict[str, Any]:
-    X, y = get_data()
-    
-    if _MODELS_LOADED:
-        scaler = _scaler
-        pca = _pca
-    else:
-        scaler = StandardScaler()
-        pca = PCA(n_components=2)
-        pca.fit(scaler.fit_transform(X))
-        
-    X_scaled = scaler.transform(X) if _MODELS_LOADED else scaler.fit_transform(X)
-    X_pca = pca.transform(X_scaled) if _MODELS_LOADED else pca.fit_transform(X_scaled)
-    
-    # Take first two components for 2D plot
+    points_2d, variance = _project(_X_real)
     points = [
-        {"x": float(X_pca[i, 0]), "y": float(X_pca[i, 1]), "label": int(y[i])}
-        for i in range(len(X_pca))
+        {"x": float(point[0]), "y": float(point[1]), "label": int(_true_labels_real[index])}
+        for index, point in enumerate(points_2d)
     ]
-    
-    return {
-        "points": points,
-        "variance_explained": [float(v) for v in pca.explained_variance_ratio_]
-    }
+    return {"points": points, "variance_explained": variance}
 
 
 @router.get("/live")
 async def get_live_points() -> Dict[str, Any]:
-    """Project recent face landmarks from the active webcam session."""
     features = get_features()
     if not features:
         return {"points": [], "count": 0}
-    X = np.asarray(features, dtype=float)
+    values = np.asarray(features, dtype=np.float64)
+    if len(values) < 3:
+        return {"points": [], "count": 0}
+    scaled = _scaled(values)
     if _MODELS_LOADED:
-        X_scaled = _scaler.transform(X)
-        projected = _pca.transform(X_scaled)
-        labels = _kmeans.predict(X_scaled)
+        projection = pca_transform(scaled, _models["pca_mean"], _models["pca_components"])
+        labels = kmeans_predict(scaled, _models["kmeans_centers"])
     else:
-        if len(X) < 3:
-            return {"points": [], "count": 0}
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        projected = PCA(n_components=2).fit_transform(X_scaled)
-        labels = KMeans(n_clusters=3, random_state=42, n_init=10).fit_predict(X_scaled)
-    density_labels = DBSCAN(eps=0.8, min_samples=10).fit_predict(X_scaled)
+        centered = scaled - scaled.mean(axis=0)
+        _, _, right = np.linalg.svd(centered, full_matrices=False)
+        projection = centered @ right[:2].T
+        _, labels, _ = kmeans_fit(scaled, 3)
+    density_labels = dbscan(scaled, eps=0.8, min_samples=10)
     points = [
-        {
-            "x": float(projected[i, 0]),
-            "y": float(projected[i, 1]),
-            "label": int(labels[i]),
-            "density_label": int(density_labels[i]),
-        }
-        for i in range(len(projected))
+        {"x": float(projection[i, 0]), "y": float(projection[i, 1]), "label": int(labels[i]), "density_label": int(density_labels[i])}
+        for i in range(len(projection))
     ]
     return {"points": points, "count": len(points)}
 
+
 @router.get("/kmeans")
 async def get_kmeans() -> Dict[str, Any]:
-    X, _ = get_data()
-    
+    scaled = _scaled(_X_real)
     if _MODELS_LOADED:
-        scaler = _scaler
-        X_scaled = scaler.transform(X)
-        final_km = _kmeans
-        optimal_k = final_km.n_clusters
-        labels = final_km.predict(X_scaled)
-        
-        # Calculate elbow on real data to keep interface identical
-        wcss_list = []
-        for k in range(1, 8):
-            km = KMeans(n_clusters=k, init='k-means++', random_state=42, n_init=10)
-            km.fit(X_scaled)
-            wcss_list.append(float(km.inertia_))
+        centers = _models["kmeans_centers"]
+        labels = kmeans_predict(scaled, centers)
+        optimal_k = len(centers)
+        wcss = float(_models["kmeans_inertia"])
     else:
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        
-        wcss_list = []
-        for k in range(1, 8):
-            km = KMeans(n_clusters=k, init='k-means++', random_state=42, n_init=10)
-            km.fit(X_scaled)
-            wcss_list.append(float(km.inertia_))
-            
-        optimal_k = 3
-        final_km = KMeans(n_clusters=optimal_k, init='k-means++', random_state=42, n_init=10)
-        labels = final_km.fit_predict(X_scaled)
-        
-    silhouette = float(silhouette_score(X_scaled, labels))
-    db_score = float(davies_bouldin_score(X_scaled, labels))
-    wcss = float(final_km.inertia_)
-    
+        centers, labels, wcss = kmeans_fit(scaled, 3)
+        optimal_k = len(centers)
+    wcss_list = [kmeans_fit(scaled, k, n_init=2, max_iter=60)[2] for k in range(1, 8)]
     return {
-        "elbow": wcss_list,
-        "optimal_k": optimal_k,
-        "silhouette_score": silhouette,
-        "davies_bouldin_score": db_score,
+        "elbow": [float(value) for value in wcss_list],
+        "optimal_k": int(optimal_k),
+        "silhouette_score": silhouette_score(scaled, labels),
+        "davies_bouldin_score": davies_bouldin_score(scaled, labels),
         "wcss": wcss,
-        "labels": labels.tolist()
+        "labels": labels.tolist(),
     }
+
 
 @router.get("/dbscan")
 async def get_dbscan() -> Dict[str, Any]:
-    X, _ = get_data()
-    scaler = _scaler if _MODELS_LOADED else StandardScaler()
-    X_scaled = scaler.transform(X) if _MODELS_LOADED else scaler.fit_transform(X)
-    
-    dbscan = DBSCAN(eps=0.8, min_samples=10)
-    labels = dbscan.fit_predict(X_scaled)
-    
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+    labels = dbscan(_scaled(_X_real), eps=0.8, min_samples=10)
+    n_clusters = len(set(labels.tolist()) - {-1})
     noise_count = int(np.sum(labels == -1))
-    core_count = int(len(labels) - noise_count)
-    
-    return {
-        "labels": labels.tolist(),
-        "noise_count": noise_count,
-        "core_count": core_count,
-        "n_clusters": n_clusters
-    }
+    return {"labels": labels.tolist(), "noise_count": noise_count, "core_count": int(len(labels) - noise_count), "n_clusters": n_clusters}
+
 
 @router.get("/hierarchical")
 async def get_hierarchical() -> Dict[str, Any]:
-    X, _ = get_data()
-    scaler = _scaler if _MODELS_LOADED else StandardScaler()
-    X_scaled = scaler.transform(X) if _MODELS_LOADED else scaler.fit_transform(X)
-    
-    hc = AgglomerativeClustering(n_clusters=3, linkage='ward')
-    labels = hc.fit_predict(X_scaled)
-    
-    silhouette = float(silhouette_score(X_scaled, labels))
-    db_score = float(davies_bouldin_score(X_scaled, labels))
-    
+    scaled = _scaled(_X_real)
+    labels = agglomerative_ward(scaled, n_clusters=3)
     return {
         "labels": labels.tolist(),
-        "silhouette_score": silhouette,
-        "davies_bouldin_score": db_score
+        "silhouette_score": silhouette_score(scaled, labels),
+        "davies_bouldin_score": davies_bouldin_score(scaled, labels),
     }
+
 
 @router.get("/validation")
 async def get_validation() -> Dict[str, Any]:
-    # the frontend expects 'wcss_list' for /validation
-    res = await get_kmeans()
-    res["wcss_list"] = res.get("elbow", [])
-    return res
+    result = await get_kmeans()
+    result["wcss_list"] = result["elbow"]
+    return result
