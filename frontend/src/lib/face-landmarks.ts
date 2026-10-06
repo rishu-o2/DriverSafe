@@ -12,9 +12,11 @@ export function createFaceLandmarker(): Promise<FaceLandmarker> {
       baseOptions: { modelAssetPath: MODEL_URL },
       runningMode: 'VIDEO',
       numFaces: 1,
-      minFaceDetectionConfidence: 0.5,
-      minFacePresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
+      // Mobile selfie cameras often have softer focus and uneven lighting.
+      // A lower confidence floor helps retain landmarks in those conditions.
+      minFaceDetectionConfidence: 0.35,
+      minFacePresenceConfidence: 0.35,
+      minTrackingConfidence: 0.35,
     }));
   }
   return landmarkerPromise;

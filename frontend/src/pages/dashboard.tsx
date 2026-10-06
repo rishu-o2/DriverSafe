@@ -287,7 +287,13 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
           throw new Error("getUserMedia is not supported in this browser");
         }
         
-        stream = await navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240, facingMode: "user" } });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: { ideal: 'user' },
+          },
+        });
         if (videoRef.current) {
           videoRef.current.onloadedmetadata = () => {
             videoRef.current?.play()
