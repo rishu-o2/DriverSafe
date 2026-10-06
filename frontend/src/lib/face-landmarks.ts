@@ -14,9 +14,9 @@ export function createFaceLandmarker(): Promise<FaceLandmarker> {
       numFaces: 1,
       // Mobile selfie cameras often have softer focus and uneven lighting.
       // A lower confidence floor helps retain landmarks in those conditions.
-      minFaceDetectionConfidence: 0.35,
-      minFacePresenceConfidence: 0.35,
-      minTrackingConfidence: 0.35,
+      minFaceDetectionConfidence: 0.2,
+      minFacePresenceConfidence: 0.2,
+      minTrackingConfidence: 0.2,
     }));
   }
   return landmarkerPromise;

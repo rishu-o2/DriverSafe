@@ -261,6 +261,7 @@ async def get_mock_detection(frame: int) -> Dict[str, Any]:
 async def detection_websocket(websocket: WebSocket):
     await websocket.accept()
     frame_count = 0
+    valid_face_frames = 0
     was_alerting = False
     tracker = LiveStreamTracker()
     try:
@@ -274,6 +275,8 @@ async def detection_websocket(websocket: WebSocket):
                 if isinstance(payload, dict) and payload.get("face_detected") and isinstance(raw_features, list) and len(raw_features) == 20:
                     features = np.asarray(raw_features, dtype=np.float32)
                     result = process_features(frame_count, features, tracker)
+                    valid_face_frames += 1
+                    result["valid_face_frames"] = valid_face_frames
                     record_frame(features, result["is_drowsy"])
                     if result["is_drowsy"] and not was_alerting:
                         _alert_logger.log_alert(frame_count, "DROWSY", result)
@@ -282,6 +285,7 @@ async def detection_websocket(websocket: WebSocket):
                     tracker.reset_on_missing_face()
                     result = {
                         "frame": frame_count,
+                        "valid_face_frames": valid_face_frames,
                         "ae_error": 0.0,
                         "ae_threshold": round(_ae_threshold, 3),
                         "if_score": 0.0,
@@ -299,14 +303,21 @@ async def detection_websocket(websocket: WebSocket):
                 await websocket.send_json(result)
             except Exception as e:
                 print(f"Error processing frame {frame_count}: {e}")
+                tracker.reset_on_missing_face()
+                was_alerting = False
                 await websocket.send_json({
                     "frame": frame_count,
+                    "valid_face_frames": valid_face_frames,
                     "ae_error": 0.0,
+                    "ae_threshold": round(_ae_threshold, 3),
                     "if_score": 0.0,
                     "lof_score": 0.0,
                     "is_drowsy": False,
                     "votes": 0,
-                    "face_detected": False
+                    "face_detected": False,
+                    "confidence": 0.0,
+                    "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
+                    "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
                 })
                 
     except WebSocketDisconnect:

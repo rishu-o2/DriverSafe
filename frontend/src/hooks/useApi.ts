@@ -142,6 +142,7 @@ export const useDetection = () => {
   const [ifScore, setIfScore] = useState<number>(0);
   const [lofScore, setLofScore] = useState<number>(0);
   const [frameCount, setFrameCount] = useState<number>(0);
+  const [faceFrameCount, setFaceFrameCount] = useState<number>(0);
   const [alertCount, setAlertCount] = useState<number>(0);
   const [liveSignals, setLiveSignals] = useState({ eye_closure: false, yawn: false, model_consensus: false });
   const [faceDetected, setFaceDetected] = useState(false);
@@ -159,6 +160,7 @@ export const useDetection = () => {
         setIfScore(data.if_score);
         setLofScore(data.lof_score);
         setFrameCount(data.frame);
+        setFaceFrameCount(data.valid_face_frames ?? 0);
         setFaceDetected(data.face_detected ?? false);
         setLiveSignals(data.live_signals ?? { eye_closure: false, yawn: false, model_consensus: false });
         
@@ -204,6 +206,7 @@ export const useDetection = () => {
     ifScore,
     lofScore,
     frameCount,
+    faceFrameCount,
     alertCount,
     liveSignals,
     faceDetected,

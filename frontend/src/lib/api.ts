@@ -265,6 +265,7 @@ export interface DetectionStatus {
 
 export interface MockFrameResponse {
   frame: number;
+  valid_face_frames?: number;
   ae_error: number;
   ae_threshold?: number;
   if_score: number;

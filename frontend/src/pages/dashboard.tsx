@@ -253,7 +253,7 @@ function AnalyticsStatCard({ value, label, note, tone = 'cyan', testId }: { valu
 }
 
 function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
-  const { isConnected, currentState, aeError, aeThreshold, frameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
+  const { isConnected, currentState, aeError, aeThreshold, frameCount, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
   const colors = chartColors();
   const [reconstructionData, setReconstructionData] = useState<Array<{ frame: number, error: number }>>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -367,7 +367,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
       </div>
 
       <section className="dashboard-analytics-stat-grid" aria-label="Live session statistics">
-        <AnalyticsStatCard value={frameCount.toLocaleString()} label="Frames processed" note={frameCount > 0 ? 'Frames received this visit' : 'Waiting for first frame'} testId="card-live-frames" />
+        <AnalyticsStatCard value={faceFrameCount.toLocaleString()} label="Face frames evaluated" note={faceFrameCount > 0 ? 'Valid landmarks sent to models' : 'Waiting for face landmarks'} testId="card-live-frames" />
         <AnalyticsStatCard value={alertCount.toString()} label="Drowsy events" note="Alert episodes this session" tone="alert" testId="card-live-alerts" />
         <AnalyticsStatCard value={metrics?.detection.f1_score?.toFixed(2) || 'N/A'} label="Validation F1" note="Offline score · updates after retraining" tone="amber" testId="card-live-f1" />
         <AnalyticsStatCard value={isConnected ? 'Active' : 'Offline'} label="Session status" note={isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
@@ -441,7 +441,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
 
           <DashboardPanel title="Session Stats" eyebrow="At a glance">
             <div className="dashboard-session-stats">
-              <div><strong>{frameCount.toLocaleString()}</strong><span>Frames</span></div>
+              <div><strong>{faceFrameCount.toLocaleString()}</strong><span>Face frames</span></div>
               <div><strong className={alertCount > 0 ? "is-alert" : ""}>{alertCount}</strong><span>Alerts</span></div>
             </div>
           </DashboardPanel>
