@@ -981,6 +981,13 @@
   animation: ds-pulse 2.8s ease-in-out infinite;
 }
 
+.dashboard-live-dot.is-offline,
+.dashboard-monitor-pulse.is-offline {
+  background: rgba(184, 207, 212, 0.42);
+  box-shadow: none;
+  animation: none;
+}
+
 .welcome-center h1 {
   margin: 0;
   color: #edf6f7;

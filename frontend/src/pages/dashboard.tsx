@@ -61,6 +61,13 @@ const tabs: Array<{ id: Exclude<DashboardView, 'settings'>; label: string }> = [
   { id: 'history', label: 'Alert History' },
 ];
 
+function formatSessionDuration(totalSeconds: number) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
 function chartColors() {
   return {
     cyan: '#74eaff',
@@ -78,6 +85,21 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const [activeView, setActiveView] = useState<DashboardView>('live');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const detection = useDetection();
+  const [sessionSeconds, setSessionSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!detection.isConnected) return;
+
+    const connectedAt = Date.now();
+    const updateElapsed = () => setSessionSeconds(Math.floor((Date.now() - connectedAt) / 1000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [detection.isConnected]);
+
+  const sessionDuration = formatSessionDuration(sessionSeconds);
+  const sessionStatus = detection.isConnected ? 'Live detection connected' : 'Detection disconnected';
 
   const signOut = () => {
     removeToken();
@@ -143,10 +165,10 @@ export default function Dashboard() {
 
         <div className="dashboard-sidebar-bottom">
           <div className="dashboard-monitor-note">
-            <span className="dashboard-monitor-pulse" aria-hidden="true" />
+            <span className={`dashboard-monitor-pulse${detection.isConnected ? '' : ' is-offline'}`} aria-hidden="true" />
             <div>
-              <strong>Live detection active</strong>
-              <span>Session · 64 min</span>
+              <strong>{sessionStatus}</strong>
+              <span>Session · {sessionDuration}</span>
             </div>
           </div>
           <button type="button" className="dashboard-signout" onClick={signOut} data-testid="button-sign-out">
@@ -171,8 +193,8 @@ export default function Dashboard() {
           </div>
           <div className="dashboard-top-actions">
             <div className="dashboard-live-chip" data-testid="status-dashboard-live">
-              <span className="dashboard-live-dot" aria-hidden="true" />
-              Live detection active
+              <span className={`dashboard-live-dot${detection.isConnected ? '' : ' is-offline'}`} aria-hidden="true" />
+              {sessionStatus}
             </div>
             <div className="dashboard-avatar dashboard-top-avatar" aria-label="Rishu Sharma">RS</div>
             <button type="button" className="dashboard-icon-button" aria-label="Sign out" onClick={signOut} data-testid="button-top-sign-out">
@@ -195,7 +217,7 @@ export default function Dashboard() {
           ))}
         </nav>
 
-        <div style={{ display: activeView === 'live' ? 'block' : 'none' }}><LiveMonitor /></div>
+        <div style={{ display: activeView === 'live' ? 'block' : 'none' }}><LiveMonitor detection={detection} sessionDuration={sessionDuration} /></div>
         {activeView === 'cluster' && <ClusteringPanel />}
         {activeView === 'metrics' && <MetricsPanel />}
         {activeView === 'history' && <AlertHistory />}
@@ -230,8 +252,8 @@ function AnalyticsStatCard({ value, label, note, tone = 'cyan', testId }: { valu
   );
 }
 
-function LiveMonitor() {
-  const { isConnected, currentState, aeError, frameCount, alertCount, confidence, modelAlerts, faceDetected, sendFrame } = useDetection();
+function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
+  const { isConnected, currentState, aeError, frameCount, alertCount, confidence, modelAlerts, faceDetected, sendFrame } = detection;
   const colors = chartColors();
   const [reconstructionData, setReconstructionData] = useState<Array<{ frame: number, error: number }>>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -338,10 +360,10 @@ function LiveMonitor() {
       </div>
 
       <section className="dashboard-analytics-stat-grid" aria-label="Live session statistics">
-        <AnalyticsStatCard value={frameCount.toLocaleString()} label="Frames processed" note="Session active" testId="card-live-frames" />
+        <AnalyticsStatCard value={frameCount.toLocaleString()} label="Frames processed" note={frameCount > 0 ? 'Frames received this visit' : 'Waiting for first frame'} testId="card-live-frames" />
         <AnalyticsStatCard value={alertCount.toString()} label="Drowsy events" note="Alert episodes this session" tone="alert" testId="card-live-alerts" />
         <AnalyticsStatCard value={metrics?.detection.f1_score?.toFixed(2) || 'N/A'} label="Validation F1" note="Saved model validation" tone="amber" testId="card-live-f1" />
-        <AnalyticsStatCard value="Active" label="Session status" note="Ongoing" tone="amber" testId="card-live-duration" />
+        <AnalyticsStatCard value={isConnected ? 'Active' : 'Offline'} label="Session status" note={isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
       </section>
 
       <div className="dashboard-live-grid">
