@@ -138,12 +138,12 @@ export const useDetection = () => {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [currentState, setCurrentState] = useState<"ALERT" | "DROWSY" | "NORMAL">("NORMAL");
   const [aeError, setAeError] = useState<number>(0);
+  const [aeThreshold, setAeThreshold] = useState<number>(0.75);
   const [ifScore, setIfScore] = useState<number>(0);
   const [lofScore, setLofScore] = useState<number>(0);
   const [frameCount, setFrameCount] = useState<number>(0);
   const [alertCount, setAlertCount] = useState<number>(0);
-  const [confidence, setConfidence] = useState(0);
-  const [modelAlerts, setModelAlerts] = useState({ autoencoder: false, isolation_forest: false, lof: false });
+  const [liveSignals, setLiveSignals] = useState({ eye_closure: false, yawn: false, model_consensus: false });
   const [faceDetected, setFaceDetected] = useState(false);
   const mounted = useRef(false);
   const wasAlerting = useRef(false);
@@ -155,12 +155,12 @@ export const useDetection = () => {
     ws.connect(
       (data: MockFrameResponse) => {
         setAeError(data.ae_error);
+        setAeThreshold(data.ae_threshold ?? 0.75);
         setIfScore(data.if_score);
         setLofScore(data.lof_score);
         setFrameCount(data.frame);
         setFaceDetected(data.face_detected ?? false);
-        setConfidence(data.confidence ?? 0);
-        setModelAlerts(data.model_alerts ?? { autoencoder: false, isolation_forest: false, lof: false });
+        setLiveSignals(data.live_signals ?? { eye_closure: false, yawn: false, model_consensus: false });
         
         if (data.is_drowsy) {
           setCurrentState("DROWSY");
@@ -200,12 +200,12 @@ export const useDetection = () => {
     isConnected,
     currentState,
     aeError,
+    aeThreshold,
     ifScore,
     lofScore,
     frameCount,
     alertCount,
-    confidence,
-    modelAlerts,
+    liveSignals,
     faceDetected,
     reconnect: connectWs,
     sendFrame

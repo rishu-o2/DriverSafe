@@ -1,8 +1,10 @@
 import os
 import json
+from collections import deque
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import numpy as np
 from typing import Dict, Any
+from time import monotonic
 
 from utils.live_session import record_frame
 from utils.alert_logger import AlertLogger
@@ -41,6 +43,81 @@ _runtime_models = None
 _alert_logger = AlertLogger(os.path.join(BASE_DIR, "data", "alerts", "alerts.json"))
 
 
+class LiveStreamTracker:
+    """Detect sustained fatigue cues from the ordered live landmark stream."""
+
+    def __init__(self):
+        self.eye_closed_since = None
+        self.eye_window = deque()
+        self.yawn_since = None
+        self.yawn_recorded = False
+        self.yawn_times = deque()
+
+    def update(self, features, model_consensus):
+        now = monotonic()
+        values = np.asarray(features, dtype=np.float32)
+
+        # Features 14 and 15 are eye aspect ratios scaled by 2.5.
+        eyes_closed = values[14] < 0.48 and values[15] < 0.48
+        if eyes_closed:
+            self.eye_closed_since = self.eye_closed_since or now
+        else:
+            self.eye_closed_since = None
+
+        self.eye_window.append((now, eyes_closed))
+        while self.eye_window and now - self.eye_window[0][0] > 10:
+            self.eye_window.popleft()
+        perclos = (
+            len(self.eye_window) >= 16
+            and sum(1 for _, closed in self.eye_window if closed) / len(self.eye_window) >= 0.8
+        )
+        eye_closure = bool(
+            (self.eye_closed_since is not None and now - self.eye_closed_since >= 1.5)
+            or perclos
+        )
+
+        # Require a sustained yawn so talking or a single noisy landmark frame
+        # does not create an event; repeated yawns remain tracked for the minute.
+        mouth_open = values[3] >= 0.55
+        if mouth_open:
+            self.yawn_since = self.yawn_since or now
+        else:
+            self.yawn_since = None
+            self.yawn_recorded = False
+        yawn = bool(self.yawn_since is not None and now - self.yawn_since >= 1.5)
+        if yawn and not self.yawn_recorded:
+            self.yawn_times.append(now)
+            self.yawn_recorded = True
+        while self.yawn_times and now - self.yawn_times[0] > 60:
+            self.yawn_times.popleft()
+
+        is_drowsy = eye_closure or yawn or len(self.yawn_times) >= 2 or model_consensus
+        signals = {
+            "eye_closure": eye_closure,
+            "yawn": yawn,
+            "model_consensus": bool(model_consensus),
+        }
+        return {
+            "is_drowsy": bool(is_drowsy),
+            "live_signals": signals,
+            "models": [name for name, active in signals.items() if active],
+        }
+
+    def reset_on_missing_face(self):
+        self.eye_closed_since = None
+        self.eye_window.clear()
+        self.yawn_since = None
+        self.yawn_recorded = False
+
+
+def apply_live_tracking(result, features, tracker):
+    live = tracker.update(features, result["is_drowsy"])
+    result.update(live)
+    signal_confidence = sum(live["live_signals"].values()) / 3
+    result["confidence"] = round(max(float(result.get("confidence", 0)), signal_confidence), 3)
+    return result
+
+
 def load_models():
     """Load all ML models once at app startup (called from main.py lifespan)."""
     global _scaler, _iso_forest, _lof, _autoencoder, _ae_threshold, _MODELS_LOADED, _runtime_models
@@ -58,10 +135,11 @@ def load_models():
         print(f"[detection] Failed to load models: {e}. Using mock detection.")
         _MODELS_LOADED = False
 
-def process_features(frame_number: int, frame_features: np.ndarray) -> Dict[str, Any]:
+def process_features(frame_number: int, frame_features: np.ndarray, tracker: LiveStreamTracker) -> Dict[str, Any]:
     """Process exactly 20 features through the models."""
     if not _MODELS_LOADED:
-        return process_frame_mock(frame_number)
+        result = process_frame_mock(frame_number)
+        return apply_live_tracking(result, frame_features, tracker)
         
     frame_scaled = (frame_features.reshape(1, -1) - _runtime_models["scaler_mean"]) / _runtime_models["scaler_scale"]
     
@@ -81,9 +159,10 @@ def process_features(frame_number: int, frame_features: np.ndarray) -> Dict[str,
     votes = sum([ae_alert, if_alert, lof_alert])
     is_drowsy = votes >= 2
     
-    return {
+    result = {
         "frame": frame_number,
         "ae_error": round(ae_error, 3),
+        "ae_threshold": round(_ae_threshold, 3),
         "if_score": round(float(if_score_raw), 3),
         "lof_score": round(float(lof_score_raw), 3),
         "is_drowsy": bool(is_drowsy),
@@ -96,6 +175,7 @@ def process_features(frame_number: int, frame_features: np.ndarray) -> Dict[str,
         },
         "face_detected": True
     }
+    return apply_live_tracking(result, frame_features, tracker)
 
 
 def _average_path_length(size: int) -> float:
@@ -152,6 +232,7 @@ def process_frame_mock(frame_number: int) -> Dict[str, Any]:
     return {
         "frame": frame_number,
         "ae_error": round(ae_error, 3),
+        "ae_threshold": round(0.75, 3),
         "if_score": round(if_score, 3),
         "lof_score": round(lof_score, 3),
         "is_drowsy": bool(is_drowsy),
@@ -181,6 +262,7 @@ async def detection_websocket(websocket: WebSocket):
     await websocket.accept()
     frame_count = 0
     was_alerting = False
+    tracker = LiveStreamTracker()
     try:
         while True:
             data = await websocket.receive_text()
@@ -191,20 +273,25 @@ async def detection_websocket(websocket: WebSocket):
                 raw_features = payload.get("features") if isinstance(payload, dict) else None
                 if isinstance(payload, dict) and payload.get("face_detected") and isinstance(raw_features, list) and len(raw_features) == 20:
                     features = np.asarray(raw_features, dtype=np.float32)
-                    result = process_features(frame_count, features)
+                    result = process_features(frame_count, features, tracker)
                     record_frame(features, result["is_drowsy"])
                     if result["is_drowsy"] and not was_alerting:
                         _alert_logger.log_alert(frame_count, "DROWSY", result)
                     was_alerting = result["is_drowsy"]
                 else:
+                    tracker.reset_on_missing_face()
                     result = {
                         "frame": frame_count,
                         "ae_error": 0.0,
+                        "ae_threshold": round(_ae_threshold, 3),
                         "if_score": 0.0,
                         "lof_score": 0.0,
                         "is_drowsy": False,
                         "votes": 0,
-                        "face_detected": False
+                        "face_detected": False,
+                        "confidence": 0.0,
+                        "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
+                        "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
                     }
                     record_frame()
                     was_alerting = False

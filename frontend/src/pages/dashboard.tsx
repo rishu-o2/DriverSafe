@@ -253,7 +253,7 @@ function AnalyticsStatCard({ value, label, note, tone = 'cyan', testId }: { valu
 }
 
 function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
-  const { isConnected, currentState, aeError, frameCount, alertCount, confidence, modelAlerts, faceDetected, sendFrame } = detection;
+  const { isConnected, currentState, aeError, aeThreshold, frameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
   const colors = chartColors();
   const [reconstructionData, setReconstructionData] = useState<Array<{ frame: number, error: number }>>([]);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -350,10 +350,11 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
   // Removed early return to always show UI
 
   const votes = [
-    ['Autoencoder', modelAlerts.autoencoder ? 'Alert' : 'Clear', modelAlerts.autoencoder ? '100%' : '0%', modelAlerts.autoencoder ? 'amber' : 'cyan'],
-    ['Iso. Forest', modelAlerts.isolation_forest ? 'Alert' : 'Clear', modelAlerts.isolation_forest ? '100%' : '0%', modelAlerts.isolation_forest ? 'amber' : 'mint'],
-    ['LOF', modelAlerts.lof ? 'Alert' : 'Clear', modelAlerts.lof ? '100%' : '0%', modelAlerts.lof ? 'amber' : 'cyan'],
+    ['Eye closure', liveSignals.eye_closure ? 'Alert' : 'Clear', liveSignals.eye_closure ? '100%' : '0%', liveSignals.eye_closure ? 'amber' : 'cyan'],
+    ['Yawn', liveSignals.yawn ? 'Alert' : 'Clear', liveSignals.yawn ? '100%' : '0%', liveSignals.yawn ? 'amber' : 'mint'],
+    ['ML consensus', liveSignals.model_consensus ? 'Alert' : 'Clear', liveSignals.model_consensus ? '100%' : '0%', liveSignals.model_consensus ? 'amber' : 'cyan'],
   ];
+  const liveSignalCount = Object.values(liveSignals).filter(Boolean).length;
 
   return (
     <div className="dashboard-content dashboard-analytics-content" data-testid="panel-live-monitor">
@@ -368,7 +369,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
       <section className="dashboard-analytics-stat-grid" aria-label="Live session statistics">
         <AnalyticsStatCard value={frameCount.toLocaleString()} label="Frames processed" note={frameCount > 0 ? 'Frames received this visit' : 'Waiting for first frame'} testId="card-live-frames" />
         <AnalyticsStatCard value={alertCount.toString()} label="Drowsy events" note="Alert episodes this session" tone="alert" testId="card-live-alerts" />
-        <AnalyticsStatCard value={metrics?.detection.f1_score?.toFixed(2) || 'N/A'} label="Validation F1" note="Saved model validation" tone="amber" testId="card-live-f1" />
+        <AnalyticsStatCard value={metrics?.detection.f1_score?.toFixed(2) || 'N/A'} label="Validation F1" note="Offline score · updates after retraining" tone="amber" testId="card-live-f1" />
         <AnalyticsStatCard value={isConnected ? 'Active' : 'Offline'} label="Session status" note={isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
       </section>
 
@@ -403,8 +404,8 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
             <div className="dashboard-score-grid">
               <FeedScore label="Alert" value={currentState} tone={currentState === 'DROWSY' ? 'amber' : 'mint'} />
               <FeedScore label="Error" value={aeError.toFixed(2)} />
-              <FeedScore label="Threshold" value="0.75" tone="amber" />
-              <FeedScore label="Model votes" value={`${Math.round(confidence * 3)}/3`} tone="cyan" />
+              <FeedScore label="AE threshold" value={aeThreshold.toFixed(2)} tone="amber" />
+              <FeedScore label="Live cues" value={`${liveSignalCount}/3`} tone="cyan" />
             </div>
           </DashboardPanel>
         </div>
@@ -416,16 +417,16 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
                 <LineChart data={reconstructionData}>
                   <CartesianGrid stroke={colors.line} strokeDasharray="3 5" vertical={false} />
                   <XAxis dataKey="frame" tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} />
-                  <YAxis domain={[0, 1.1]} tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={26} />
+                  <YAxis domain={[0, Math.max(1.1, aeThreshold * 1.1)]} tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={26} />
                   <Tooltip contentStyle={{ background: colors.panel, border: `1px solid ${colors.line}`, color: colors.ice, fontSize: 11 }} />
-                  <ReferenceLine y={0.75} stroke={colors.amber} strokeDasharray="4 4" />
+                  <ReferenceLine y={aeThreshold} stroke={colors.amber} strokeDasharray="4 4" />
                   <Line type="monotone" dataKey="error" stroke={colors.cyan} strokeWidth={2} dot={false} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </DashboardPanel>
 
-          <DashboardPanel title="Model Voting" eyebrow="Three-model consensus">
+          <DashboardPanel title="Live Drowsiness Signals" eyebrow="Temporal stream analysis">
             <div className="dashboard-voting-grid">
               {votes.map(([model, state, score, tone]) => (
                 <div className="dashboard-vote" key={model}>
@@ -588,7 +589,7 @@ function MetricsPanel() {
         </DashboardPanel>
         <DashboardPanel title="Detection Performance" eyebrow="Unit V · VI">
           <div className="dashboard-metric-tile-grid">
-            <MetricTile value={detection?.f1_score?.toFixed(2) || "N/A"} label="F1-Score" note="Saved model validation" />
+            <MetricTile value={detection?.f1_score?.toFixed(2) || "N/A"} label="F1-Score" note="Offline validation · updates after retraining" />
             <MetricTile value={detection?.roc_auc?.toFixed(2) || "N/A"} label="ROC-AUC" note="Saved model validation" />
             <MetricTile value={detection?.precision == null ? "N/A" : `${(detection.precision * 100).toFixed(0)}%`} label="Precision" note="Saved model validation" />
             <MetricTile value={detection?.recall == null ? "N/A" : `${(detection.recall * 100).toFixed(0)}%`} label="Recall" note="Saved model validation" />

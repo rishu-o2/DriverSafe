@@ -266,6 +266,7 @@ export interface DetectionStatus {
 export interface MockFrameResponse {
   frame: number;
   ae_error: number;
+  ae_threshold?: number;
   if_score: number;
   lof_score: number;
   is_drowsy: boolean;
@@ -273,6 +274,7 @@ export interface MockFrameResponse {
   face_detected?: boolean;
   confidence?: number;
   model_alerts?: { autoencoder: boolean; isolation_forest: boolean; lof: boolean };
+  live_signals?: { eye_closure: boolean; yawn: boolean; model_consensus: boolean };
 }
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
