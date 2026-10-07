@@ -263,6 +263,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameraStatus, setCameraStatus] = useState('Camera: requesting access');
   const [detectorStatus, setDetectorStatus] = useState('MediaPipe: loading runtime and model');
+  const [mediaPipeFaceDetected, setMediaPipeFaceDetected] = useState(false);
 
   const formatError = (error: unknown) => {
     if (error instanceof Error) return error.name ? `${error.name}: ${error.message}` : error.message;
@@ -347,10 +348,12 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
     const intervalId = window.setInterval(() => {
       if (!landmarkerRef.current) return;
       if (!cameraActive || !videoRef.current) {
+        setMediaPipeFaceDetected(false);
         setDetectorStatus('MediaPipe: idle · camera unavailable');
         return;
       }
       if (!isConnected) {
+        setMediaPipeFaceDetected(false);
         setDetectorStatus('MediaPipe: idle · detection connection unavailable');
         return;
       }
@@ -364,6 +367,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         const result = landmarkerRef.current.detectForVideo(video, performance.now());
         const landmarks = result.faceLandmarks?.[0];
         const features = extractFaceFeatures(landmarks, video.videoWidth, video.videoHeight);
+        setMediaPipeFaceDetected(Boolean(landmarks));
         if (!landmarks) {
           setDetectorStatus('MediaPipe: no face landmarks · check lighting, framing, and camera focus');
         } else if (!features) {
@@ -374,6 +378,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         sendFrame(JSON.stringify({ face_detected: Boolean(features), features }));
       } catch (error) {
         console.error('Face landmark detection failed:', error);
+        setMediaPipeFaceDetected(false);
         setDetectorStatus(`MediaPipe detection error: ${formatError(error)}`);
       }
     }, 250);
@@ -411,7 +416,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         <div className="dashboard-live-primary">
           <DashboardPanel title="Live Webcam Feed" eyebrow="Attention stream" action={<span className="dashboard-panel-code">CAM / 01</span>}>
             <div className="dashboard-webcam">
-              <span className={`dashboard-feed-badge dashboard-feed-badge--${currentState === 'DROWSY' ? 'alert' : 'active'}`}><span /> {faceDetected ? currentState : 'NO FACE'}</span>
+              <span className={`dashboard-feed-badge dashboard-feed-badge--${currentState === 'DROWSY' ? 'alert' : 'active'}`}><span /> {!cameraActive ? (cameraError ? 'CAMERA ERROR' : 'CAMERA') : !isConnected ? 'OFFLINE' : detectorStatus.startsWith('MediaPipe: loading') ? 'LOADING' : detectorStatus.startsWith('MediaPipe initialization error') ? 'MODEL ERROR' : mediaPipeFaceDetected ? (faceDetected ? currentState : 'FACE DETECTED') : 'NO FACE'}</span>
               <span className="dashboard-feed-badge dashboard-feed-badge--fps">{isConnected ? '4 FPS' : 'Offline'}</span>
               <div className="dashboard-webcam-placeholder">
                 <video 
