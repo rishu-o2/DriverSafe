@@ -41,10 +41,9 @@ try:
     _X_real = np.asarray([[float(row[name]) for name in _feature_columns] for row in rows], dtype=np.float64)
     _true_labels_real = np.asarray([int(row["label"]) for row in rows], dtype=int)
 except Exception as exc:
-    print(f"[clustering] Dataset unavailable: {exc}; using generated demonstration points.")
-    rng = np.random.default_rng(42)
-    _X_real = np.vstack((rng.normal(0.3, 0.05, (350, 20)), rng.normal(0.2, 0.08, (100, 20)), rng.normal(0.1, 0.06, (50, 20))))
-    _true_labels_real = np.array([0] * 350 + [1] * 100 + [2] * 50)
+    print(f"[clustering] Dataset unavailable: {exc}; training-data clustering is disabled.")
+    _X_real = np.empty((0, 20), dtype=np.float64)
+    _true_labels_real = np.empty(0, dtype=int)
 
 
 def _scaled(values: np.ndarray) -> np.ndarray:
@@ -71,6 +70,8 @@ def _project(values: np.ndarray) -> tuple[np.ndarray, list[float]]:
 
 @router.get("/pca")
 async def get_pca() -> Dict[str, Any]:
+    if not len(_X_real):
+        return {"points": [], "variance_explained": []}
     points_2d, variance = _project(_X_real)
     points = [{"x": float(point[0]), "y": float(point[1]), "label": int(_true_labels_real[index])} for index, point in enumerate(points_2d)]
     return {"points": points, "variance_explained": variance}
@@ -78,6 +79,8 @@ async def get_pca() -> Dict[str, Any]:
 
 @router.get("/kmeans")
 async def get_kmeans() -> Dict[str, Any]:
+    if not len(_X_real):
+        return {"elbow": [], "optimal_k": 0, "silhouette_score": None, "davies_bouldin_score": None, "wcss": None, "labels": []}
     scaled = _scaled(_X_real)
     if _MODELS_LOADED:
         centers = _models["kmeans_centers"]
@@ -93,6 +96,8 @@ async def get_kmeans() -> Dict[str, Any]:
 
 @router.get("/dbscan")
 async def get_dbscan() -> Dict[str, Any]:
+    if not len(_X_real):
+        return {"labels": [], "noise_count": 0, "core_count": 0, "n_clusters": 0}
     labels = dbscan(_scaled(_X_real), eps=0.8, min_samples=10)
     noise_count = int(np.sum(labels == -1))
     return {"labels": labels.tolist(), "noise_count": noise_count, "core_count": int(len(labels) - noise_count), "n_clusters": len(set(labels.tolist()) - {-1})}
@@ -100,6 +105,8 @@ async def get_dbscan() -> Dict[str, Any]:
 
 @router.get("/hierarchical")
 async def get_hierarchical() -> Dict[str, Any]:
+    if not len(_X_real):
+        return {"labels": [], "silhouette_score": None, "davies_bouldin_score": None}
     scaled = _scaled(_X_real)
     labels = agglomerative_ward(scaled, n_clusters=3)
     return {"labels": labels.tolist(), "silhouette_score": silhouette_score(scaled, labels), "davies_bouldin_score": davies_bouldin_score(scaled, labels)}

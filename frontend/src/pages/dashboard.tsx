@@ -1,4 +1,4 @@
-import { type ReactNode, useState, useEffect, useRef } from 'react';
+import { type ReactNode, useState, useEffect, useMemo, useRef } from 'react';
 import {
   Activity,
   BarChart3,
@@ -17,7 +17,6 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
-  Cell,
   Line,
   LineChart,
   ReferenceLine,
@@ -29,8 +28,8 @@ import {
   YAxis,
 } from 'recharts';
 import { Link, useLocation } from 'wouter';
-import { useMetrics, useLiveMetrics, useLiveTimeline, useLiveRoc, useLiveClusterValidation, useAlerts, useClustering, useDetection, useLiveClusters } from '../hooks/useApi';
-import { exportAlerts, removeToken, resetLiveSession } from '../lib/api';
+import { removeToken, resetLiveSession } from '../lib/api';
+import { useDetection } from '../hooks/useApi';
 import { createFaceLandmarker, extractFaceFeatures } from '../lib/face-landmarks';
 
 type DashboardView = 'live' | 'cluster' | 'metrics' | 'history' | 'settings';
@@ -218,9 +217,9 @@ export default function Dashboard() {
         </nav>
 
         <div style={{ display: activeView === 'live' ? 'block' : 'none' }}><LiveMonitor detection={detection} sessionDuration={sessionDuration} /></div>
-        {activeView === 'cluster' && <ClusteringPanel />}
-        {activeView === 'metrics' && <MetricsPanel />}
-        {activeView === 'history' && <AlertHistory />}
+        {activeView === 'cluster' && <ClusteringPanel detection={detection} />}
+        {activeView === 'metrics' && <MetricsPanel detection={detection} />}
+        {activeView === 'history' && <AlertHistory detection={detection} sessionDuration={sessionDuration} />}
         {activeView === 'settings' && <SettingsPanel />}
       </section>
     </main>
@@ -253,10 +252,17 @@ function AnalyticsStatCard({ value, label, note, tone = 'cyan', testId }: { valu
 }
 
 function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
-  const { isConnected, currentState, aeError, aeThreshold, ifScore, lofScore, frameCount, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
+  const { isConnected, currentState, aeError, aeThreshold, ifScore, lofScore, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
   const colors = chartColors();
-  const { data: metrics } = useMetrics();
-  const liveTimeline = useLiveTimeline();
+  const liveTimeline = {
+    timeline: detection.recentResults.map((result) => ({
+      frame: result.frame,
+      error: result.ae_error,
+      threshold: result.ae_threshold ?? aeThreshold,
+      is_drowsy: result.is_drowsy,
+    })),
+    threshold: aeThreshold,
+  };
   const videoRef = useRef<HTMLVideoElement>(null);
   const landmarkerRef = useRef<Awaited<ReturnType<typeof createFaceLandmarker>> | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
@@ -406,10 +412,10 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
       </div>
 
       <section className="dashboard-analytics-stat-grid" aria-label="Live session statistics">
-        <AnalyticsStatCard value={(detection.sessionFrames || faceFrameCount).toLocaleString()} label="Face frames evaluated" note={faceFrameCount > 0 ? 'Valid landmarks sent to models' : 'Waiting for face landmarks'} testId="card-live-frames" />
+        <AnalyticsStatCard value={faceFrameCount.toLocaleString()} label="Face frames evaluated" note={faceFrameCount > 0 ? 'Valid landmarks sent to models' : 'Waiting for face landmarks'} testId="card-live-frames" />
         <AnalyticsStatCard value={alertCount.toString()} label="Drowsy events" note="Alert episodes this session" tone="alert" testId="card-live-alerts" />
-        <AnalyticsStatCard value={metrics?.detection.f1_score?.toFixed(2) || 'N/A'} label="Validation F1" note="Offline score · updates after retraining" tone="amber" testId="card-live-f1" />
-        <AnalyticsStatCard value={isConnected ? 'Active' : 'Offline'} label="Session status" note={isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
+        <AnalyticsStatCard value={detection.liveMetrics?.avg_ae_error?.toFixed(2) || 'N/A'} label="Live AE error" note={`${faceFrameCount} live face frames`} tone="amber" testId="card-live-f1" />
+        <AnalyticsStatCard value={detection.modelAvailable === false ? 'Rules only' : isConnected ? 'Active' : 'Offline'} label="Session status" note={detection.modelAvailable === false ? 'Inference models unavailable; temporal eye/yawn cues remain active' : isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
       </section>
 
       <div className="dashboard-live-grid">
@@ -521,176 +527,225 @@ function ScatterPanel({ title, eyebrow, series, badge }: { title: string; eyebro
   );
 }
 
-function ClusteringPanel() {
-  const { validation, kmeans, pca, loading, error } = useClustering();
-  const livePoints = useLiveClusters();
-  const liveValidation = useLiveClusterValidation();
+function clusterLiveFeatures(features: number[][]) {
+  const points = features.slice(-100).filter((row) => row.length >= 4).map((row) => ({ x: row[2], y: row[3] }));
+  if (points.length < 3) return { points: [] as Array<{ x: number; y: number; label: number; density_label: number }>, elbow: [] as Array<{ k: string; wcss: number }>, silhouette: null as number | null, daviesBouldin: null as number | null };
+
+  const runKMeans = (count: number) => {
+    const ordered = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+    let centers = Array.from({ length: count }, (_, index) => ({ ...ordered[Math.floor(index * (ordered.length - 1) / count)] }));
+    let labels = points.map(() => 0);
+    for (let iteration = 0; iteration < 8; iteration += 1) {
+      labels = points.map((point) => centers.reduce((best, center, index) => {
+        const distance = (point.x - center.x) ** 2 + (point.y - center.y) ** 2;
+        const bestCenter = centers[best];
+        return distance < (point.x - bestCenter.x) ** 2 + (point.y - bestCenter.y) ** 2 ? index : best;
+      }, 0));
+      centers = centers.map((center, label) => {
+        const members = points.filter((_, index) => labels[index] === label);
+        return members.length ? { x: members.reduce((sum, point) => sum + point.x, 0) / members.length, y: members.reduce((sum, point) => sum + point.y, 0) / members.length } : center;
+      });
+    }
+    const wcss = points.reduce((sum, point, index) => sum + (point.x - centers[labels[index]].x) ** 2 + (point.y - centers[labels[index]].y) ** 2, 0);
+    return { labels, centers, wcss };
+  };
+  const kmeans = runKMeans(Math.min(3, points.length));
+  const meanX = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+  const meanY = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+  const scaleX = Math.sqrt(points.reduce((sum, point) => sum + (point.x - meanX) ** 2, 0) / points.length) || 1;
+  const scaleY = Math.sqrt(points.reduce((sum, point) => sum + (point.y - meanY) ** 2, 0) / points.length) || 1;
+  const normalized = points.map((point) => ({ x: (point.x - meanX) / scaleX, y: (point.y - meanY) / scaleY }));
+  const densityLabels = Array(points.length).fill(-2) as number[];
+  let cluster = 0;
+  const getNeighbors = (index: number) => normalized.flatMap((point, other) => Math.hypot(point.x - normalized[index].x, point.y - normalized[index].y) <= 0.7 ? [other] : []);
+  for (let index = 0; index < points.length; index += 1) {
+    if (densityLabels[index] !== -2) continue;
+    const nearby = getNeighbors(index);
+    if (nearby.length < 4) { densityLabels[index] = -1; continue; }
+    densityLabels[index] = cluster;
+    const queue = [...nearby];
+    for (let cursor = 0; cursor < queue.length; cursor += 1) {
+      const candidate = queue[cursor];
+      if (densityLabels[candidate] === -1) densityLabels[candidate] = cluster;
+      if (densityLabels[candidate] !== -2) continue;
+      densityLabels[candidate] = cluster;
+      const expanded = getNeighbors(candidate);
+      if (expanded.length >= 4) queue.push(...expanded);
+    }
+    cluster += 1;
+  }
+  const elbow = Array.from({ length: Math.min(5, points.length) }, (_, index) => {
+    const count = index + 1;
+    return { k: `k=${count}`, wcss: runKMeans(count).wcss };
+  });
+  const activeLabels = [...new Set(kmeans.labels)];
+  let silhouette: number | null = null;
+  let daviesBouldin: number | null = null;
+  if (activeLabels.length > 1 && activeLabels.length < points.length) {
+    const scores = points.map((point, index) => {
+      const label = kmeans.labels[index];
+      const within = points.filter((_, other) => kmeans.labels[other] === label && other !== index);
+      if (!within.length) return 0;
+      const a = within.reduce((sum, other) => sum + Math.hypot(point.x - other.x, point.y - other.y), 0) / within.length;
+      const b = activeLabels.filter((otherLabel) => otherLabel !== label).map((otherLabel) => {
+        const group = points.filter((_, other) => kmeans.labels[other] === otherLabel);
+        return group.reduce((sum, other) => sum + Math.hypot(point.x - other.x, point.y - other.y), 0) / group.length;
+      }).reduce((best, value) => Math.min(best, value), Number.POSITIVE_INFINITY);
+      return (b - a) / Math.max(a, b, 1e-9);
+    });
+    silhouette = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+    const scatters = activeLabels.map((label) => {
+      const group = points.filter((_, index) => kmeans.labels[index] === label);
+      const center = kmeans.centers[label];
+      return group.reduce((sum, point) => sum + Math.hypot(point.x - center.x, point.y - center.y), 0) / group.length;
+    });
+    const ratios = activeLabels.map((label, index) => activeLabels.filter((_, other) => other !== index).map((otherLabel) => {
+      const left = kmeans.centers[label];
+      const right = kmeans.centers[otherLabel];
+      return (scatters[index] + scatters[otherLabel]) / Math.max(Math.hypot(left.x - right.x, left.y - right.y), 1e-9);
+    }).reduce((max, ratio) => Math.max(max, ratio), 0));
+    daviesBouldin = ratios.reduce((sum, ratio) => sum + ratio, 0) / ratios.length;
+  }
+  return {
+    points: points.map((point, index) => ({ ...point, label: kmeans.labels[index], density_label: densityLabels[index] === -2 ? -1 : densityLabels[index] })),
+    elbow,
+    silhouette,
+    daviesBouldin,
+  };
+}
+
+function ClusteringPanel({ detection }: { detection: ReturnType<typeof useDetection> }) {
+  const liveClustering = useMemo(() => clusterLiveFeatures(detection.recentFeatures), [detection.recentFeatures]);
+  const livePoints = liveClustering.points;
   const colors = chartColors();
-
-  // Removed early returns to preserve UI
-
-  const elbowData = validation?.wcss_list.map((wcss, index) => ({ k: `k=${index + 1}`, wcss })) || [];
-  
-  // Use PCA data if available, otherwise fallback to empty arrays
-  const pcaAlert = pca?.points.filter(p => p.label === 0).map(p => ({ x: p.x, y: p.y })) || [];
-  const pcaTransition = pca?.points.filter(p => p.label === 1).map(p => ({ x: p.x, y: p.y })) || [];
-  const pcaDrowsy = pca?.points.filter(p => p.label === 2).map(p => ({ x: p.x, y: p.y })) || [];
-  const liveClusterSeries = [0, 1, 2].map((label) => ({
-    name: `Live cluster ${label + 1}`,
-    color: [colors.cyan, colors.amber, colors.alert][label],
+  const clusterLabels = [...new Set(livePoints.map((point) => point.label))].sort((a, b) => a - b);
+  const liveClusterSeries = clusterLabels.map((label, index) => ({
+    name: 'K-means cluster ' + (label + 1),
+    color: [colors.cyan, colors.amber, colors.alert][index % 3],
     shape: 'square' as const,
-    data: livePoints.filter(point => point.label === label).map(({ x, y }) => ({ x, y })),
+    data: livePoints.filter((point) => point.label === label).map(({ x, y }) => ({ x, y })),
   }));
-  const liveDensitySeries = [...new Set(livePoints.map(point => point.density_label ?? -1))].sort((a, b) => a - b).map(label => ({
-    name: label < 0 ? 'Noise' : `Density cluster ${label + 1}`,
-    color: label < 0 ? colors.muted : [colors.cyan, colors.amber, colors.mint][label % 3],
-    data: livePoints.filter(point => (point.density_label ?? -1) === label).map(({ x, y }) => ({ x, y })),
+  const densityLabels = [...new Set(livePoints.map((point) => point.density_label))].sort((a, b) => a - b);
+  const liveDensitySeries = densityLabels.map((label, index) => ({
+    name: label < 0 ? 'Noise' : 'Density cluster ' + (label + 1),
+    color: label < 0 ? colors.muted : [colors.cyan, colors.amber, colors.mint][index % 3],
+    data: livePoints.filter((point) => point.density_label === label).map(({ x, y }) => ({ x, y })),
   }));
+  const liveDensityClusterCount = densityLabels.filter((label) => label >= 0).length;
+  const noiseCount = livePoints.filter((point) => point.density_label === -1).length;
 
   return (
     <div className="dashboard-content dashboard-analytics-content" data-testid="panel-clustering">
       <div className="dashboard-analytics-heading">
         <div>
-          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Model exploration</p>
-          <h2>Patterns behind the signal.</h2>
+          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Live feature analysis</p>
+          <h2>Patterns in this camera session.</h2>
         </div>
-        <span className="dashboard-session-code">UNIT / II — IV</span>
+        <span className="dashboard-session-code">{livePoints.length} LIVE FRAMES</span>
       </div>
+      <p className="dashboard-chart-note">Clustering runs on recent webcam landmarks: average eye aspect ratio and mouth aspect ratio.</p>
       <div className="dashboard-chart-grid dashboard-chart-grid--two">
-        <ScatterPanel title="PCA Scatter Plot" eyebrow="Training data + live camera session" series={[
-          { name: 'Training · Alert', color: colors.mint, data: pcaAlert, shape: 'circle', opacity: 0.24 },
-          { name: 'Training · Transition', color: colors.amber, data: pcaTransition, shape: 'circle', opacity: 0.24 },
-          { name: 'Training · Drowsy', color: colors.alert || '#ff6b6b', data: pcaDrowsy, shape: 'circle', opacity: 0.24 },
-          ...liveClusterSeries,
-        ]} />
-        <ScatterPanel title="Live camera clusters" eyebrow={`PCA projection · ${liveValidation?.source === 'live' ? 'live validation' : 'training validation'}`} badge={`${livePoints.length} frames`} series={liveClusterSeries} />
-        <DashboardPanel title="Live Cluster Validation" eyebrow={`${liveValidation?.source === 'live' ? 'Camera session' : 'Training fallback'} · ${liveValidation?.count || 0} frames`}>
+        <ScatterPanel title="Live K-means clusters" eyebrow="Current camera feature stream" badge={livePoints.length + ' frames'} series={liveClusterSeries} />
+        <ScatterPanel title="Live density clusters" eyebrow="DBSCAN · normalized live features" badge={noiseCount + ' noise'} series={liveDensitySeries} />
+        <DashboardPanel title="Live Cluster Summary" eyebrow="Calculated from current camera frames">
           <div className="dashboard-metric-tile-grid">
-            <MetricTile value={liveValidation?.silhouette_score.toFixed(2) || 'N/A'} label="Silhouette score" note={liveValidation?.source === 'live' ? 'Live camera clusters' : 'Training data'} />
-            <MetricTile value={liveValidation?.davies_bouldin_score.toFixed(2) || 'N/A'} label="Davies-Bouldin" note={liveValidation?.source === 'live' ? 'Live camera clusters' : 'Training data'} tone="cyan" />
+            <MetricTile value={livePoints.length ? clusterLabels.length.toString() : 'N/A'} label="K-means clusters" note="Current live window" />
+            <MetricTile value={livePoints.length ? liveDensityClusterCount.toString() : 'N/A'} label="DBSCAN clusters" note={livePoints.length + ' current live frames'} tone="cyan" />
           </div>
         </DashboardPanel>
-        <DashboardPanel title="Elbow Method — WCSS vs k" eyebrow="Unit II · Cluster validation" action={<span className="dashboard-panel-badge">Optimal k={validation?.optimal_k || 3}</span>}>
+        <DashboardPanel title="Live Elbow Method · WCSS vs k" eyebrow="Computed from current webcam frames">
           <div className="dashboard-chart dashboard-chart--scatter">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={elbowData}>
+              <BarChart data={liveClustering.elbow}>
                 <CartesianGrid stroke={colors.line} strokeDasharray="3 5" vertical={false} />
                 <XAxis dataKey="k" tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} />
                 <YAxis tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={25} />
-                <Tooltip contentStyle={{ background: colors.panel, border: `1px solid ${colors.line}`, color: colors.ice, fontSize: 11 }} />
-                <Bar dataKey="wcss" radius={[3, 3, 0, 0]}>
-                  {elbowData.map((entry, index) => <Cell key={entry.k} fill={index + 1 === validation?.optimal_k ? colors.cyan : 'rgba(116, 234, 255, 0.22)'} />)}
-                </Bar>
+                <Tooltip contentStyle={{ background: colors.panel, border: '1px solid ' + colors.line, color: colors.ice, fontSize: 11 }} />
+                <Bar dataKey="wcss" fill="rgba(116, 234, 255, 0.55)" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
-          <p className="dashboard-chart-note">Optimal k={validation?.optimal_k || 3} · Alert / Transition / Drowsy</p>
+          <p className="dashboard-chart-note">{livePoints.length < 3 ? 'Waiting for at least 3 live face frames.' : 'Eye openness and mouth opening from the latest live window.'}</p>
         </DashboardPanel>
-        <ScatterPanel title="Live density clusters" eyebrow="DBSCAN · latest webcam frames" badge={`${livePoints.filter(point => point.density_label === -1).length} noise`} series={liveDensitySeries} />
       </div>
     </div>
   );
 }
-
 function MetricTile({ value, label, note, tone = 'mint' }: { value: string; label: string; note: string; tone?: 'mint' | 'cyan' }) {
   return (
     <div className={`dashboard-metric-tile dashboard-metric-tile--${tone}`}>
       <strong>{value}</strong>
       <span>{label}</span>
       <small>{note}</small>
-      <i><b style={{ width: tone === 'mint' ? '82%' : '68%' }} /></i>
     </div>
   );
 }
 
-function MetricsPanel() {
-  const { data, loading, error } = useMetrics();
-  const { liveData } = useLiveMetrics();
-  const liveRoc = useLiveRoc();
+function MetricsPanel({ detection }: { detection: ReturnType<typeof useDetection> }) {
   const colors = chartColors();
-
-  // Removed early returns
-
-  const clustering = data?.clustering;
-  const detection = liveData ? { ...data?.detection, ...liveData } : data?.detection;
-  const rawConfusion = liveData?.confusion ?? data?.confusion;
-  const confusion = rawConfusion && ('true_positive' in rawConfusion
-    ? rawConfusion
-    : { true_positive: rawConfusion.tp, false_positive: rawConfusion.fp, false_negative: rawConfusion.fn, true_negative: rawConfusion.tn });
-  const roc = liveRoc ?? data?.roc;
-  const liveSource = liveData?.source ?? 'offline';
-
-  const rocData = roc?.fpr.map((fpr, i) => ({ fpr, tpr: roc.tpr[i] })) || [];
+  const summary = detection.liveMetrics;
+  const chartData = detection.recentResults.slice(-60).map((result) => ({
+    frame: result.frame,
+    ae_error: result.ae_error,
+    threshold: result.ae_threshold ?? detection.aeThreshold,
+    if_score: result.if_score,
+    lof_score: result.lof_score,
+  }));
+  const liveValue = (value: number | null | undefined, digits = 0) => value == null ? 'N/A' : value.toFixed(digits);
 
   return (
     <div className="dashboard-content dashboard-analytics-content" data-testid="panel-metrics">
       <div className="dashboard-analytics-heading">
         <div>
-          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Performance lab</p>
-          <h2>Confidence you can measure.</h2>
+          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Live performance</p>
+          <h2>Measurements from this camera session.</h2>
         </div>
-        <span className="dashboard-session-code">UNIT / V — VI</span>
+        <span className="dashboard-session-code">{detection.isConnected ? 'LIVE' : 'WAITING FOR STREAM'}</span>
       </div>
-      <p className="dashboard-chart-note"><span className={`dashboard-live-dot${liveSource === 'live' ? '' : ' is-offline'}`} aria-hidden="true" /> {liveSource === 'live'
-        ? `Live camera estimate · ${liveData?.live_frames || 0} frames analyzed`
-        : liveData?.live_frames
-          ? `Offline metrics · collecting ${liveData.live_frames}/${liveData.live_frames + liveData.frames_needed} camera frames`
-          : 'Offline metrics · connect camera to collect live session data'}</p>
+      <p className="dashboard-chart-note">Counts and model scores come directly from the live detection WebSocket. F1 and ROC are unavailable because this stream has no ground-truth labels.</p>
       <div className="dashboard-metric-panels">
-        <DashboardPanel title="Clustering Validation" eyebrow="Unit II · VI">
+        <DashboardPanel title="Live Session Counts" eyebrow="Current browser stream">
           <div className="dashboard-metric-tile-grid">
-            <MetricTile value={clustering?.silhouette.toFixed(2) || "0"} label="Silhouette score" note="Target > 0.4" />
-            <MetricTile value={clustering?.davies_bouldin.toFixed(2) || "0"} label="Davies-Bouldin" note="Target < 1.5" />
-            <MetricTile value={clustering?.wcss.toFixed(0) || "0"} label="WCSS / Inertia" note={`At k=${clustering?.optimal_k || 3}`} tone="cyan" />
-            <MetricTile value={`k=${clustering?.optimal_k || 3}`} label="Optimal clusters" note="Elbow method" tone="cyan" />
+            <MetricTile value={detection.sessionFrames.toString()} label="Frames received" note="Current live session" />
+            <MetricTile value={detection.faceFrameCount.toString()} label="Face frames" note="Accepted by live detector" tone="cyan" />
+            <MetricTile value={detection.liveMetrics?.drowsy_frames?.toString() || '0'} label="Drowsy frames" note="Current stream window" />
+            <MetricTile value={detection.alertCount.toString()} label="Drowsy events" note="Rising alert transitions" tone="cyan" />
           </div>
         </DashboardPanel>
-        <DashboardPanel title="Detection Performance" eyebrow="Unit V · VI">
+        <DashboardPanel title="Live Signal Summary" eyebrow="Recent face frames">
           <div className="dashboard-metric-tile-grid">
-            <MetricTile value={detection?.f1_score?.toFixed(2) || "N/A"} label="F1-Score" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} />
-            <MetricTile value={detection?.roc_auc?.toFixed(2) || "N/A"} label="ROC-AUC" note={liveRoc?.source === 'live' ? 'Live estimate' : 'Offline curve'} />
-            <MetricTile value={detection?.precision == null ? "N/A" : `${(detection.precision * 100).toFixed(0)}%`} label="Precision" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} />
-            <MetricTile value={detection?.recall == null ? "N/A" : `${(detection.recall * 100).toFixed(0)}%`} label="Recall" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} />
-            <MetricTile value={detection?.accuracy == null ? "N/A" : `${(detection.accuracy * 100).toFixed(0)}%`} label="Accuracy" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} tone="cyan" />
+            <MetricTile value={liveValue(summary?.avg_ae_error, 3)} label="Mean AE error" note="Observed live frames" />
+            <MetricTile value={liveValue(summary?.avg_if_score, 3)} label="Mean IF score" note="Observed live frames" tone="cyan" />
+            <MetricTile value={liveValue(summary?.avg_lof_score, 3)} label="Mean LOF score" note="Observed live frames" />
+            <MetricTile value={summary?.model_consensus_frames?.toString() || '0'} label="Model consensus frames" note="Live model output" tone="cyan" />
           </div>
         </DashboardPanel>
-        <DashboardPanel title="Confusion Matrix" eyebrow="Detection outcomes">
-          <div className="dashboard-confusion-matrix">
-            <ConfusionCell value={confusion?.true_positive.toString() || "0"} label="True Positive" tone="mint" />
-            <ConfusionCell value={confusion?.false_positive.toString() || "0"} label="False Positive" tone="alert" />
-            <ConfusionCell value={confusion?.false_negative.toString() || "0"} label="False Negative" tone="alert" />
-            <ConfusionCell value={confusion?.true_negative.toString() || "0"} label="True Negative" tone="mint" />
+        <DashboardPanel title="Live Drowsiness Cues" eyebrow="Temporal signals from current frames">
+          <div className="dashboard-metric-tile-grid">
+            <MetricTile value={summary?.eye_closure_frames?.toString() || '0'} label="Eye closure frames" note="Sustained closure signal" />
+            <MetricTile value={summary?.yawn_frames?.toString() || '0'} label="Yawn frames" note="Sustained mouth opening" tone="cyan" />
           </div>
         </DashboardPanel>
-        <DashboardPanel title={`ROC Curve · AUC = ${roc?.auc?.toFixed(2) || detection?.roc_auc?.toFixed(2) || "N/A"}`} eyebrow={liveRoc?.source === 'live' ? 'Live camera threshold estimate' : 'Saved model threshold'}>
+        <DashboardPanel title="Live Model Scores" eyebrow="Latest WebSocket frames">
           <div className="dashboard-chart dashboard-chart--roc">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={rocData}>
+              <LineChart data={chartData}>
                 <CartesianGrid stroke={colors.line} strokeDasharray="3 5" />
-                <XAxis dataKey="fpr" type="number" domain={[0, 1]} tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} />
-                <YAxis dataKey="tpr" type="number" domain={[0, 1]} tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={25} />
-                <Tooltip contentStyle={{ background: colors.panel, border: `1px solid ${colors.line}`, color: colors.ice, fontSize: 11 }} />
-                <Line type="monotone" dataKey="fpr" stroke={colors.muted} strokeDasharray="5 5" dot={false} />
-                <Line type="monotone" dataKey="tpr" stroke={colors.cyan} strokeWidth={2} dot={false} />
+                <XAxis dataKey="frame" tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} />
+                <YAxis tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={34} />
+                <Tooltip contentStyle={{ background: colors.panel, border: '1px solid ' + colors.line, color: colors.ice, fontSize: 11 }} />
+                <Line type="monotone" dataKey="ae_error" name="AE error" stroke={colors.cyan} strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="threshold" name="AE threshold" stroke={colors.amber} strokeDasharray="4 4" dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="if_score" name="IF score" stroke={colors.mint} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                <Line type="monotone" dataKey="lof_score" name="LOF score" stroke={colors.alert} strokeWidth={1.5} dot={false} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
-          <div className="dashboard-roc-caption"><span>False Positive Rate</span><span>True Positive Rate</span></div>
         </DashboardPanel>
       </div>
     </div>
   );
 }
-
-function ConfusionCell({ value, label, tone }: { value: string; label: string; tone: 'mint' | 'alert' }) {
-  return (
-    <div className={`dashboard-confusion-cell dashboard-confusion-cell--${tone}`}>
-      <strong>{value}</strong>
-      <span>{label}</span>
-    </div>
-  );
-}
-
 function downloadAlertCsv(csvData: string) {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(new Blob([csvData], { type: 'text/csv;charset=utf-8' }));
@@ -699,29 +754,23 @@ function downloadAlertCsv(csvData: string) {
   URL.revokeObjectURL(link.href);
 }
 
-function AlertHistory() {
-  const { alerts, stats, loading, error } = useAlerts();
+function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
   const colors = chartColors();
-
-  // Removed early returns
-
-  const handleDownload = async () => {
-    try {
-      const csvData = await exportAlerts();
-      downloadAlertCsv(csvData);
-    } catch (err) {
-      console.error(err);
-    }
+  const alertRows = detection.alerts;
+  const yawnEvents = alertRows.filter((alert) => alert.models.some((model) => model.toLowerCase().includes('yawn'))).length;
+  const handleDownload = () => {
+    const headers = ['id', 'timestamp', 'frame', 'state', 'ae_error', 'if_score', 'lof', 'confidence', 'models'];
+    const rows = alertRows.map((alert) => [alert.id, alert.timestamp, alert.frame ?? '', alert.state, alert.ae_error, alert.if_score, alert.lof, alert.confidence, alert.models.join('|')]);
+    const csv = [headers, ...rows].map((row) => row.map((cell) => '"' + String(cell).replaceAll('"', '""') + '"').join(',')).join('\n');
+    downloadAlertCsv(csv);
   };
-
-  const alertRows = alerts?.alerts || [];
   const now = Date.now();
   const frequency = Array.from({ length: 9 }, (_, index) => {
     const start = now - (8 - index) * 10 * 60_000;
     const end = start + 10 * 60_000;
     return {
       time: new Date(start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      alerts: alertRows.filter(alert => {
+      alerts: alertRows.filter((alert) => {
         const timestamp = new Date(alert.timestamp).getTime();
         return timestamp >= start && timestamp < end;
       }).length,
@@ -732,14 +781,15 @@ function AlertHistory() {
     <div className="dashboard-content dashboard-analytics-content" data-testid="panel-alert-history">
       <div className="dashboard-analytics-heading">
         <div>
-          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Session archive</p>
-          <h2>Every alert, in context.</h2>
+          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Live session alerts</p>
+          <h2>Events from the current camera stream.</h2>
         </div>
-        <span className="dashboard-session-code">LOG / {alerts?.total || 0} EVENTS</span>
+        <span className="dashboard-session-code">{alertRows.length} LIVE EVENTS</span>
       </div>
-      <DashboardPanel title="Alert History Log" eyebrow="Live session ledger" action={(
+      <p className="dashboard-chart-note">This list is recorded from drowsy transitions received over the active WebSocket. It resets when this dashboard session ends.</p>
+      <DashboardPanel title="Live Alert Log" eyebrow="Current browser session" action={(
         <div className="dashboard-history-actions">
-          <span className="dashboard-alert-total">{alerts?.total || 0} alerts</span>
+          <span className="dashboard-alert-total">{alertRows.length} alerts</span>
           <button type="button" className="dashboard-export-button" onClick={handleDownload} data-testid="button-export-alerts">
             <Download aria-hidden="true" /> Export CSV
           </button>
@@ -748,53 +798,53 @@ function AlertHistory() {
         <div className="dashboard-alert-table-wrap">
           <table className="dashboard-alert-table">
             <thead>
-              <tr>{['#', 'Timestamp', 'State', 'AE Error', 'IF Score', 'LOF', 'Confidence', 'Models'].map((heading) => <th key={heading}>{heading}</th>)}</tr>
+              <tr>{['#', 'Timestamp', 'State', 'AE Error', 'IF Score', 'LOF', 'Confidence', 'Signals'].map((heading) => <th key={heading}>{heading}</th>)}</tr>
             </thead>
             <tbody>
               {alertRows.map((alert) => (
-                <tr key={alert.id} data-testid={`row-alert-${alert.id}`}>
+                <tr key={alert.id} data-testid={'row-alert-' + alert.id}>
                   <td>{alert.id.toString().padStart(3, '0')}</td>
                   <td>{new Date(alert.timestamp).toLocaleTimeString()}</td>
-                  <td><span className={`dashboard-state-pill dashboard-state-pill--${alert.state === 'DROWSY' ? 'alert' : 'amber'}`}>{alert.state}</span></td>
-                  <td>{alert.ae_error.toFixed(2)}</td>
-                  <td>{alert.if_score.toFixed(2)}</td>
-                  <td>{alert.lof.toFixed(2)}</td>
+                  <td><span className="dashboard-state-pill dashboard-state-pill--alert">{alert.state}</span></td>
+                  <td>{alert.ae_error.toFixed(3)}</td>
+                  <td>{alert.if_score.toFixed(3)}</td>
+                  <td>{alert.lof.toFixed(3)}</td>
                   <td>{(alert.confidence * 100).toFixed(0)}%</td>
                   <td>{alert.models.join(', ')}</td>
                 </tr>
               ))}
+              {!alertRows.length && <tr><td colSpan={8}>No drowsy events in this live session.</td></tr>}
             </tbody>
           </table>
         </div>
       </DashboardPanel>
       <div className="dashboard-history-grid">
-        <DashboardPanel title="Alert Frequency" eyebrow="Alert count over session timeline">
+        <DashboardPanel title="Live Alert Frequency" eyebrow="Current session · 10 minute windows">
           <div className="dashboard-chart dashboard-chart--frequency">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={frequency}>
                 <CartesianGrid stroke={colors.line} strokeDasharray="3 5" vertical={false} />
                 <XAxis dataKey="time" tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} />
                 <YAxis tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={25} />
-                <Tooltip contentStyle={{ background: colors.panel, border: `1px solid ${colors.line}`, color: colors.ice, fontSize: 11 }} />
+                <Tooltip contentStyle={{ background: colors.panel, border: '1px solid ' + colors.line, color: colors.ice, fontSize: 11 }} />
                 <Bar dataKey="alerts" fill="rgba(232, 197, 139, 0.72)" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </DashboardPanel>
-        <DashboardPanel title="Alert Breakdown" eyebrow={`Session: ${stats?.session_duration || '0m'} · ${stats?.total_frames || 0} frames processed`}>
+        <DashboardPanel title="Live Alert Breakdown" eyebrow={'Session: ' + sessionDuration + ' · ' + detection.sessionFrames + ' frames'}>
           <div className="dashboard-breakdown">
-            <BreakdownRow label="Drowsy alerts" value={stats?.drowsy_alerts.toString() || "0"} tone="alert" />
-            <BreakdownRow label="Yawn only" value={stats?.yawn_alerts.toString() || "0"} tone="amber" />
-            <BreakdownRow label="Alert frames" value={stats?.alert_frames.toString() || "0"} tone="mint" />
+            <BreakdownRow label="Drowsy events" value={detection.alertCount.toString()} tone="alert" />
+            <BreakdownRow label="Yawn-tagged events" value={yawnEvents.toString()} tone="amber" />
+            <BreakdownRow label="Drowsy frames" value={(detection.liveMetrics?.drowsy_frames ?? 0).toString()} tone="mint" />
             <div className="dashboard-breakdown-divider" />
-            <BreakdownRow label="Total frames" value={stats?.total_frames.toString() || "0"} tone="muted" />
+            <BreakdownRow label="Face frames" value={detection.faceFrameCount.toString()} tone="muted" />
           </div>
         </DashboardPanel>
       </div>
     </div>
   );
 }
-
 function BreakdownRow({ label, value, tone }: { label: string; value: string; tone: 'alert' | 'amber' | 'mint' | 'muted' }) {
   return <div className="dashboard-breakdown-row"><span>{label}</span><strong className={`is-${tone}`}>{value}</strong></div>;
 }

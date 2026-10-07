@@ -1,5 +1,4 @@
 import json
-import math
 import os
 from fastapi import APIRouter
 from utils.live_session import get_session, reset_session
@@ -7,45 +6,21 @@ from utils.live_session import get_session, reset_session
 router = APIRouter()
 RESULTS_PATH = os.path.join(os.path.dirname(__file__), "..", "saved_models", "results.json")
 
-FALLBACK_RESULTS = {
-    "clustering": {
-        "silhouette": 0.61,
-        "davies_bouldin": 1.12,
-        "wcss": 284,
-        "optimal_k": 3,
-        "wcss_list": [820, 510, 284, 220, 180, 155, 138],
-    },
-    "detection": {
-        "f1_score": 0.87,
-        "roc_auc": 0.91,
-        "precision": 0.83,
-        "recall": 0.89,
-        "accuracy": 0.94,
-    },
-    "confusion": {"tp": 312, "fp": 18, "fn": 9, "tn": 3503},
-    "roc": {"fpr": [0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0], "tpr": [0.0, 0.60, 0.78, 0.88, 0.92, 0.96, 0.98, 1.0], "auc": 0.91},
-}
-
-
 def _load_results():
     try:
         with open(RESULTS_PATH, "r", encoding="utf-8") as results_file:
             return json.load(results_file)
     except (OSError, json.JSONDecodeError):
-        return FALLBACK_RESULTS
+        return {}
 
 
 def _roc_data(results):
     detection = results.get("detection", {})
-    auc = float(detection.get("roc_auc", FALLBACK_RESULTS["detection"]["roc_auc"]))
+    auc = detection.get("roc_auc")
     saved_curve = results.get("roc_curve")
     if isinstance(saved_curve, dict) and "fpr" in saved_curve and "tpr" in saved_curve:
         return {"fpr": saved_curve["fpr"], "tpr": saved_curve["tpr"], "auc": auc}
-
-    exponent = (1.0 / max(auc, 1e-12)) - 1.0
-    fpr = [index / 100 for index in range(101)]
-    tpr = [math.pow(value, exponent) if value else 0.0 for value in fpr]
-    return {"fpr": fpr, "tpr": tpr, "auc": auc}
+    return {"fpr": [], "tpr": [], "auc": auc}
 
 
 def _detection_data(results):
@@ -57,7 +32,7 @@ def _detection_data(results):
         accuracy = (confusion.get("tp", 0) + confusion.get("tn", 0)) / total
     return {
         "f1_score": detection.get("f1_score"),
-        "roc_auc": float(detection.get("roc_auc", FALLBACK_RESULTS["detection"]["roc_auc"])),
+        "roc_auc": detection.get("roc_auc"),
         "precision": detection.get("precision"),
         "recall": detection.get("recall"),
         "accuracy": accuracy,
@@ -67,16 +42,16 @@ def _detection_data(results):
 def _confusion_data(results):
     confusion = results.get("confusion", {})
     return {
-        "true_positive": confusion.get("tp", 0),
-        "false_positive": confusion.get("fp", 0),
-        "false_negative": confusion.get("fn", 0),
-        "true_negative": confusion.get("tn", 0),
+        "true_positive": confusion.get("tp"),
+        "false_positive": confusion.get("fp"),
+        "false_negative": confusion.get("fn"),
+        "true_negative": confusion.get("tn"),
     }
 
 
 @router.get("/clustering")
 def get_clustering_metrics():
-    return _load_results().get("clustering", FALLBACK_RESULTS["clustering"])
+    return _load_results().get("clustering", {"silhouette": None, "davies_bouldin": None, "wcss": None, "optimal_k": None, "wcss_list": []})
 
 
 @router.get("/detection")
@@ -100,27 +75,16 @@ def get_confusion_matrix():
 
 @router.get("/roc")
 async def get_roc_curve() -> dict:
-    if _load_results():
-        saved_curve = _load_results().get("roc_curve")
-        detection = _load_results().get("detection", {})
-        auc = detection.get("roc_auc", FALLBACK_RESULTS["detection"]["roc_auc"])
-        if isinstance(saved_curve, dict) and "fpr" in saved_curve and "tpr" in saved_curve:
-            return {"fpr": saved_curve["fpr"], "tpr": saved_curve["tpr"], "auc": auc}
-
-        exponent = (1.0 / max(float(auc), 1e-12)) - 1.0
-        fpr = [index / 100 for index in range(101)]
-        tpr = [math.pow(value, exponent) if value else 0.0 for value in fpr]
-        return {"fpr": fpr, "tpr": tpr, "auc": auc}
-    return FALLBACK_RESULTS["roc"]
+    return _roc_data(_load_results())
 
 
 @router.get("/all")
 def get_all_metrics():
     results = _load_results()
     return {
-        "clustering": results.get("clustering", FALLBACK_RESULTS["clustering"]),
+        "clustering": results.get("clustering", {"silhouette": None, "davies_bouldin": None, "wcss": None, "optimal_k": None, "wcss_list": []}),
         "detection": _detection_data(results),
-        "confusion": results.get("confusion", FALLBACK_RESULTS["confusion"]),
+        "confusion": results.get("confusion", {"tp": None, "fp": None, "fn": None, "tn": None}),
         "roc": _roc_data(results),
         "live": get_live_metrics(),
     }
@@ -132,15 +96,21 @@ def get_live_metrics():
     live = session.compute_live_metrics()
     live_frames = len(session.recent_results)
     if live is not None:
-        return {**live, "source": "live", "metric_kind": "heuristic_estimate", "frames_needed": 0, "live_frames": live_frames}
-
-    saved = _load_results()
+        return {**live, "source": "live", "metric_kind": "live_stream_summary", "frames_needed": 0, "live_frames": live_frames}
     return {
-        **(saved.get("detection") or {}),
-        "confusion": saved.get("confusion", FALLBACK_RESULTS["confusion"]),
-        "source": "offline",
-        "frames_needed": max(0, 10 - live_frames),
+        "f1_score": None,
+        "roc_auc": None,
+        "precision": None,
+        "recall": None,
+        "accuracy": None,
+        "confusion": None,
+        "source": "live",
+        "metric_kind": "live_stream_summary",
+        "frames_needed": 0,
         "live_frames": live_frames,
+        "total_frames": live_frames,
+        "drowsy_frames": 0,
+        "alert_frames": 0,
     }
 
 
@@ -149,24 +119,14 @@ def get_live_roc():
     session = get_session()
     roc = session.compute_live_roc()
     if roc is not None:
-        return {**roc, "source": "live", "metric_kind": "heuristic_estimate"}
-    saved = _load_results()
-    curve = saved.get("roc_curve") or FALLBACK_RESULTS["roc"]
-    detection = saved.get("detection", {})
-    auc = detection.get("roc_auc", curve.get("auc", FALLBACK_RESULTS["roc"]["auc"]))
-    if "fpr" not in curve or "tpr" not in curve:
-        exponent = (1.0 / max(float(auc), 1e-12)) - 1.0
-        fpr = [index / 100 for index in range(101)]
-        tpr = [math.pow(value, exponent) if value else 0.0 for value in fpr]
-    else:
-        fpr, tpr = curve["fpr"], curve["tpr"]
-    return {"fpr": fpr, "tpr": tpr, "auc": auc, "source": "offline"}
+        return {**roc, "source": "live", "metric_kind": "live_stream_summary"}
+    return {"fpr": [], "tpr": [], "auc": None, "source": "live", "metric_kind": "live_stream_summary"}
 
 
 @router.get("/live/timeline")
 def get_live_timeline():
     timeline = get_session().get_live_ae_timeline()
-    threshold = timeline[-1]["threshold"] if timeline else 0.75
+    threshold = timeline[-1]["threshold"] if timeline else None
     return {"timeline": timeline, "threshold": threshold}
 
 

@@ -110,27 +110,33 @@ export interface AllMetrics {
 }
 
 export interface LiveMetrics extends DetectionMetrics {
-  confusion: ConfusionMatrix | { tp: number; fp: number; fn: number; tn: number };
-  source: "live" | "offline";
-  metric_kind?: "heuristic_estimate";
+  confusion?: ConfusionMatrix | { tp: number; fp: number; fn: number; tn: number } | null;
+  source: "live";
+  metric_kind?: "live_stream_summary";
   frames_needed: number;
   live_frames: number;
   total_frames?: number;
   drowsy_frames?: number;
   alert_frames?: number;
-  avg_ae_error?: number;
-  avg_if_score?: number;
-  avg_lof_score?: number;
+  avg_ae_error?: number | null;
+  avg_if_score?: number | null;
+  avg_lof_score?: number | null;
+  eye_closure_frames?: number;
+  yawn_frames?: number;
+  model_consensus_frames?: number;
 }
 
-export interface LiveRocCurve extends RocCurve {
-  source: "live" | "offline";
+export interface LiveRocCurve {
+  fpr: number[];
+  tpr: number[];
+  auc: number | null;
+  source: "live";
   metric_kind?: "heuristic_estimate";
 }
 
 export interface LiveTimeline {
   timeline: Array<{ frame: number; error: number; threshold: number; is_drowsy: boolean }>;
-  threshold: number;
+  threshold: number | null;
 }
 
 export const getAllMetrics = async (): Promise<AllMetrics> => {
@@ -254,10 +260,10 @@ export interface LiveClusterResponse {
 }
 
 export interface LiveClusterValidation {
-  silhouette_score: number;
-  davies_bouldin_score: number;
+  silhouette_score: number | null;
+  davies_bouldin_score: number | null;
   count: number;
-  source: "live" | "training";
+  source: "live";
 }
 
 export interface PCAResponse {
@@ -321,7 +327,7 @@ export interface DetectionStatus {
   websocket_url: string;
 }
 
-export interface MockFrameResponse {
+export interface DetectionFrameResponse {
   frame: number;
   valid_face_frames?: number;
   ae_error: number;
@@ -337,15 +343,13 @@ export interface MockFrameResponse {
   session_frames?: number;
   session_drowsy?: number;
   live_metrics?: LiveMetrics;
+  features?: number[];
+  models?: string[];
+  model_available?: boolean;
 }
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
   const response = await fetch(`${BASE_URL}/api/detection/status`, { headers: getHeaders() });
-  return handleResponse(response);
-};
-
-export const getMockFrame = async (frame: number): Promise<MockFrameResponse> => {
-  const response = await fetch(`${BASE_URL}/api/detection/mock/${frame}`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
@@ -355,7 +359,7 @@ export class DetectionWebSocket {
   private ws: WebSocket | null = null;
 
   connect(
-    onMessage: (data: MockFrameResponse) => void,
+    onMessage: (data: DetectionFrameResponse) => void,
     onError: (error: Event) => void,
     onClose: (event: CloseEvent) => void,
     onOpen?: () => void

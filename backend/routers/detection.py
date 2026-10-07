@@ -124,14 +124,26 @@ def load_models():
         _MODELS_LOADED = True
         print("[detection] NumPy inference models loaded successfully.")
     except Exception as exc:
-        print(f"[detection] Failed to load models: {exc}. Using mock detection.")
+        print(f"[detection] Failed to load inference models: {exc}. Temporal rules remain active.")
         _MODELS_LOADED = False
 
 
 def process_features(frame_number: int, frame_features: np.ndarray, tracker: LiveStreamTracker) -> Dict[str, Any]:
     """Process exactly 20 features through the models."""
     if not _MODELS_LOADED:
-        result = process_frame_mock(frame_number)
+        result = {
+            "frame": frame_number,
+            "ae_error": 0.0,
+            "ae_threshold": round(_ae_threshold, 3),
+            "if_score": 0.0,
+            "lof_score": 0.0,
+            "is_drowsy": False,
+            "votes": 0,
+            "confidence": 0.0,
+            "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
+            "face_detected": True,
+            "model_available": False,
+        }
         return apply_live_tracking(result, frame_features, tracker)
 
     frame_scaled = (frame_features.reshape(1, -1) - _runtime_models["scaler_mean"]) / _runtime_models["scaler_scale"]
@@ -158,6 +170,7 @@ def process_features(frame_number: int, frame_features: np.ndarray, tracker: Liv
             "lof": bool(lof_alert),
         },
         "face_detected": True,
+        "model_available": True,
     }
     return apply_live_tracking(result, frame_features, tracker)
 
@@ -200,45 +213,13 @@ def _lof_decision(values: np.ndarray, model) -> float:
     return -lof - float(model["lof_offset"])
 
 
-def process_frame_mock(frame_number: int) -> Dict[str, Any]:
-    np.random.seed(frame_number % 100)
-    ae_error = float(np.random.normal(0.5, 0.2))
-    if_score = float(np.random.normal(0.4, 0.15))
-    lof_score = float(np.random.normal(1.0, 0.4))
-    ae_alert = ae_error > 0.75
-    if_alert = if_score > 0.6
-    lof_alert = lof_score > 1.5
-    votes = sum([ae_alert, if_alert, lof_alert])
-    is_drowsy = votes >= 2
-    return {
-        "frame": frame_number,
-        "ae_error": round(ae_error, 3),
-        "ae_threshold": round(0.75, 3),
-        "if_score": round(if_score, 3),
-        "lof_score": round(lof_score, 3),
-        "is_drowsy": bool(is_drowsy),
-        "votes": int(votes),
-        "confidence": round(votes / 3, 3),
-        "model_alerts": {
-            "autoencoder": bool(ae_alert),
-            "isolation_forest": bool(if_alert),
-            "lof": bool(lof_alert),
-        },
-        "face_detected": True,
-    }
-
-
 @router.get("/status")
 async def get_status() -> Dict[str, str]:
     return {
-        "status": "Detection API is running (browser landmarks + real models)" if _MODELS_LOADED else "Detection API is running (Mock)",
-        "websocket_url": "ws://localhost:8000/api/detection/ws",
+        "status": "Detection API is running (live models)" if _MODELS_LOADED else "Detection API is running (temporal rules only; models unavailable)",
+        "model_status": "ready" if _MODELS_LOADED else "unavailable",
+        "websocket_url": "/api/detection/ws",
     }
-
-
-@router.get("/mock/{frame}")
-async def get_mock_detection(frame: int) -> Dict[str, Any]:
-    return process_frame_mock(frame)
 
 
 def _record_live_result(result):
@@ -246,10 +227,7 @@ def _record_live_result(result):
     session.record_frame_result(result)
     result["session_frames"] = session.total_predictions
     result["session_drowsy"] = sum(1 for item in session.recent_results if item["is_drowsy"])
-    if session.total_predictions % 30 == 0:
-        live_metrics = session.compute_live_metrics()
-        if live_metrics:
-            result["live_metrics"] = live_metrics
+    result["live_metrics"] = session.compute_live_metrics()
     return result
 
 
@@ -270,6 +248,7 @@ async def detection_websocket(websocket: WebSocket):
                 if isinstance(payload, dict) and payload.get("face_detected") and isinstance(raw_features, list) and len(raw_features) == 20:
                     features = np.asarray(raw_features, dtype=np.float32)
                     result = process_features(frame_count, features, tracker)
+                    result["features"] = [float(value) for value in features]
                     valid_face_frames += 1
                     result["valid_face_frames"] = valid_face_frames
                     record_frame(features, result["is_drowsy"])

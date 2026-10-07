@@ -39,6 +39,7 @@ class LiveSession:
             self.recent_results.append({
                 "frame": result.get("frame", self.total_predictions + 1),
                 "is_drowsy": bool(result.get("is_drowsy", False)),
+                "face_detected": bool(result.get("face_detected", False)),
                 "ae_error": float(result.get("ae_error", 0) or 0),
                 "ae_threshold": float(result.get("ae_threshold", 0.75) or 0.75),
                 "if_score": float(result.get("if_score", 0) or 0),
@@ -52,52 +53,30 @@ class LiveSession:
     def compute_live_metrics(self):
         with self._lock:
             results = list(self.recent_results)
-        if len(results) < 10:
+            total_frames = self.total_predictions
+        if not results:
             return None
-
-        tp = fp = fn = tn = 0
-        for result in results:
-            signals = result["live_signals"] or {}
-            temporal_cue = bool(signals.get("eye_closure") or signals.get("yawn"))
-            model_vote = bool(signals.get("model_consensus", result["votes"] >= 2))
-            if model_vote and temporal_cue:
-                tp += 1
-            elif not model_vote and temporal_cue:
-                fn += 1
-            elif not model_vote and result["ae_error"] > 0.9:
-                fp += 1
-            elif not model_vote and result["ae_error"] <= 0.6:
-                tn += 1
-
-        assessed = tp + fp + fn + tn
-        precision = tp / (tp + fp) if tp + fp else 0.0
-        recall = tp / (tp + fn) if tp + fn else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-        accuracy = (tp + tn) / len(results) if results else 0.0
-        with self._lock:
-            self.true_positives = tp
-            self.false_positives = fp
-            self.false_negatives = fn
-            self.true_negatives = tn
-        roc = self.compute_live_roc()
+        face_results = [row for row in results if row.get("face_detected", True)]
+        average = lambda key: round(sum(row[key] for row in face_results) / len(face_results), 3) if face_results else None
         return {
-            "f1_score": round(f1, 3),
-            "precision": round(precision, 3),
-            "recall": round(recall, 3),
-            "accuracy": round(accuracy, 3),
-            "roc_auc": roc["auc"] if roc else None,
-            "avg_ae_error": round(sum(row["ae_error"] for row in results) / len(results), 3),
-            "avg_if_score": round(sum(row["if_score"] for row in results) / len(results), 3),
-            "avg_lof_score": round(sum(row["lof_score"] for row in results) / len(results), 3),
+            "f1_score": None,
+            "precision": None,
+            "recall": None,
+            "accuracy": None,
+            "roc_auc": None,
+            "confusion": None,
+            "avg_ae_error": average("ae_error"),
+            "avg_if_score": average("if_score"),
+            "avg_lof_score": average("lof_score"),
             "total_frames": len(results),
+            "face_frames": len(face_results),
             "drowsy_frames": sum(row["is_drowsy"] for row in results),
-            "alert_frames": sum(not row["is_drowsy"] for row in results),
-            "confusion": {
-                "true_positive": tp,
-                "false_positive": fp,
-                "false_negative": fn,
-                "true_negative": tn,
-            },
+            "alert_frames": sum(row["is_drowsy"] for row in results),
+            "eye_closure_frames": sum(bool((row.get("live_signals") or {}).get("eye_closure")) for row in results),
+            "yawn_frames": sum(bool((row.get("live_signals") or {}).get("yawn")) for row in results),
+            "model_consensus_frames": sum(bool((row.get("live_signals") or {}).get("model_consensus")) for row in results),
+            "model_consensus_rate": round(sum(bool((row.get("live_signals") or {}).get("model_consensus")) for row in results) / len(results), 3),
+            "session_frames": total_frames,
         }
 
     def compute_live_roc(self):

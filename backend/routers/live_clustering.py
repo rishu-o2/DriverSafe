@@ -1,4 +1,3 @@
-import json
 import os
 from typing import Any
 
@@ -19,7 +18,6 @@ from utils.numpy_ml import (
 router = APIRouter()
 BASE_DIR = os.path.dirname(__file__)
 MODELS_DIR = os.path.join(BASE_DIR, "..", "saved_models")
-RESULTS_PATH = os.path.join(MODELS_DIR, "results.json")
 try:
     _models = np.load(os.path.join(MODELS_DIR, "runtime_models.npz"))
 except (OSError, ValueError):
@@ -33,19 +31,6 @@ def _scale(values: np.ndarray) -> np.ndarray:
     scale = values.std(axis=0)
     scale[scale == 0] = 1.0
     return standardize(values, mean, scale)
-
-
-def _fallback_validation() -> dict[str, Any]:
-    try:
-        with open(RESULTS_PATH, encoding="utf-8") as result_file:
-            clustering = json.load(result_file).get("clustering", {})
-    except (OSError, json.JSONDecodeError):
-        clustering = {}
-    return {
-        "silhouette_score": clustering.get("silhouette", 0.0),
-        "davies_bouldin_score": clustering.get("davies_bouldin", 0.0),
-        "source": "training",
-    }
 
 
 @router.get("/live")
@@ -75,7 +60,7 @@ def get_live_clusters() -> dict[str, Any]:
 def get_live_cluster_validation() -> dict[str, Any]:
     features = get_session().get_features()
     if len(features) < 10:
-        return {**_fallback_validation(), "count": len(features)}
+        return {"silhouette_score": None, "davies_bouldin_score": None, "source": "live", "count": len(features)}
     scaled = _scale(np.asarray(features, dtype=np.float64))
     if _models is not None:
         labels = kmeans_predict(scaled, _models["kmeans_centers"])
@@ -83,7 +68,7 @@ def get_live_cluster_validation() -> dict[str, Any]:
         _, labels, _ = kmeans_fit(scaled, 3)
     distinct = np.unique(labels)
     if len(distinct) < 2 or len(distinct) >= len(labels):
-        return {**_fallback_validation(), "count": len(features)}
+        return {"silhouette_score": None, "davies_bouldin_score": None, "source": "live", "count": len(features)}
     return {
         "silhouette_score": round(silhouette_score(scaled, labels), 3),
         "davies_bouldin_score": round(davies_bouldin_score(scaled, labels), 3),
