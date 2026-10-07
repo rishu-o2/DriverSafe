@@ -2327,6 +2327,8 @@
   color: rgba(184, 207, 212, 0.44);
   font: 0.51rem var(--app-font-mono);
   letter-spacing: 0.06em;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .dashboard-score-grid {

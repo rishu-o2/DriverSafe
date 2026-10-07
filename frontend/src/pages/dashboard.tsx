@@ -255,22 +255,32 @@ function AnalyticsStatCard({ value, label, note, tone = 'cyan', testId }: { valu
 function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
   const { isConnected, currentState, aeError, aeThreshold, ifScore, lofScore, frameCount, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
   const colors = chartColors();
+  const { data: metrics } = useMetrics();
   const liveTimeline = useLiveTimeline();
   const videoRef = useRef<HTMLVideoElement>(null);
   const landmarkerRef = useRef<Awaited<ReturnType<typeof createFaceLandmarker>> | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const { data: metrics } = useMetrics();
+  const [cameraStatus, setCameraStatus] = useState('Camera: requesting access');
+  const [detectorStatus, setDetectorStatus] = useState('MediaPipe: loading runtime and model');
+
+  const formatError = (error: unknown) => {
+    if (error instanceof Error) return error.name ? `${error.name}: ${error.message}` : error.message;
+    return String(error);
+  };
 
   useEffect(() => {
     let active = true;
     createFaceLandmarker()
       .then((landmarker) => {
-        if (active) landmarkerRef.current = landmarker;
+        if (active) {
+          landmarkerRef.current = landmarker;
+          setDetectorStatus('MediaPipe: initialized');
+        }
       })
       .catch((error) => {
         console.error('Failed to load the face landmark model:', error);
-        setCameraError('Could not load the face landmark model');
+        if (active) setDetectorStatus(`MediaPipe initialization error: ${formatError(error)}`);
       });
     return () => {
       active = false;
@@ -283,6 +293,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
 
     async function setupCamera() {
       try {
+        setCameraStatus('Camera: requesting access');
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           throw new Error("getUserMedia is not supported in this browser");
         }
@@ -294,11 +305,21 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
             facingMode: { ideal: 'user' },
           },
         });
+        stream.getVideoTracks().forEach((track) => {
+          track.addEventListener('ended', () => {
+            setCameraActive(false);
+            setCameraStatus('Camera: stream ended');
+          });
+        });
         if (videoRef.current) {
           videoRef.current.onloadedmetadata = () => {
             videoRef.current?.play()
-              .then(() => { setCameraActive(true); setCameraError(null); })
-              .catch(e => setCameraError(e.message || String(e)));
+              .then(() => { setCameraActive(true); setCameraError(null); setCameraStatus('Camera: active'); })
+              .catch(e => {
+                const detail = formatError(e);
+                setCameraError(detail);
+                setCameraStatus(`Camera playback error: ${detail}`);
+              });
           };
           videoRef.current.srcObject = stream;
         } else {
@@ -306,7 +327,9 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         }
       } catch (err: any) {
         console.error("Failed to access camera:", err);
-        setCameraError(err.message || String(err));
+        const detail = formatError(err);
+        setCameraError(detail);
+        setCameraStatus(`Camera access error: ${detail}`);
       }
     }
 
@@ -322,13 +345,36 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      if (isConnected && cameraActive && videoRef.current && landmarkerRef.current) {
-        const video = videoRef.current;
-        if (video.videoWidth > 0 && video.videoHeight > 0) {
-          const result = landmarkerRef.current.detectForVideo(video, performance.now());
-          const features = extractFaceFeatures(result.faceLandmarks[0], video.videoWidth, video.videoHeight);
-          sendFrame(JSON.stringify({ face_detected: Boolean(features), features }));
+      if (!landmarkerRef.current) return;
+      if (!cameraActive || !videoRef.current) {
+        setDetectorStatus('MediaPipe: idle · camera unavailable');
+        return;
+      }
+      if (!isConnected) {
+        setDetectorStatus('MediaPipe: idle · detection connection unavailable');
+        return;
+      }
+
+      const video = videoRef.current;
+      if (video.videoWidth <= 0 || video.videoHeight <= 0) {
+        setDetectorStatus('MediaPipe: waiting for video frames');
+        return;
+      }
+      try {
+        const result = landmarkerRef.current.detectForVideo(video, performance.now());
+        const landmarks = result.faceLandmarks?.[0];
+        const features = extractFaceFeatures(landmarks, video.videoWidth, video.videoHeight);
+        if (!landmarks) {
+          setDetectorStatus('MediaPipe: no face landmarks · check lighting, framing, and camera focus');
+        } else if (!features) {
+          setDetectorStatus(`MediaPipe: landmarks rejected · ${landmarks.length} points`);
+        } else {
+          setDetectorStatus(`MediaPipe: face detected · ${landmarks.length} landmarks`);
         }
+        sendFrame(JSON.stringify({ face_detected: Boolean(features), features }));
+      } catch (error) {
+        console.error('Face landmark detection failed:', error);
+        setDetectorStatus(`MediaPipe detection error: ${formatError(error)}`);
       }
     }, 250);
 
@@ -387,7 +433,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
                   </div>
                 )}
               </div>
-              <span className="dashboard-webcam-readout">EAR: 0.31 · MAR: 0.12 · Head: stable</span>
+              <span className="dashboard-webcam-readout">{cameraStatus} · {detectorStatus}</span>
             </div>
             <div className="dashboard-score-grid">
               <FeedScore label="Alert" value={currentState} tone={currentState === 'DROWSY' ? 'amber' : 'mint'} />
