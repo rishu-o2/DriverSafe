@@ -381,7 +381,9 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         } else {
           setDetectorStatus(`MediaPipe: face detected · ${landmarks.length} landmarks`);
         }
-        sendFrame(JSON.stringify({ face_detected: Boolean(features), features }));
+        if (!sendFrame(JSON.stringify({ face_detected: Boolean(features), features }))) {
+          setDetectorStatus('MediaPipe: face found, but detection WebSocket is not open');
+        }
       } catch (error) {
         console.error('Face landmark detection failed:', error);
         setMediaPipeFaceDetected(false);

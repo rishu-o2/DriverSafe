@@ -392,13 +392,14 @@ export class DetectionWebSocket {
     };
   }
 
-  send(data: object | string): void {
-    if (this.isConnected()) {
-      if (typeof data === 'string') {
-        this.ws?.send(data);
-      } else {
-        this.ws?.send(JSON.stringify(data));
-      }
+  send(data: object | string): boolean {
+    if (!this.isConnected()) return false;
+    try {
+      this.ws!.send(typeof data === 'string' ? data : JSON.stringify(data));
+      return true;
+    } catch (error) {
+      console.error('Detection WS frame send failed', error);
+      return false;
     }
   }
 

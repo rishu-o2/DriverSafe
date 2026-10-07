@@ -59,12 +59,15 @@ export const useDetection = () => {
   const mounted = useRef(false);
   const wasAlerting = useRef(false);
   const reconnectTimer = useRef<number | undefined>(undefined);
+  const lastFrameSentAt = useRef(0);
+  const lastFrameReceivedAt = useRef(0);
 
   const [ws] = useState(() => new DetectionWebSocket());
 
   const connectWs = useCallback(() => {
     ws.connect(
       (data: DetectionFrameResponse) => {
+        lastFrameReceivedAt.current = Date.now();
         setAeError(data.ae_error);
         setAeThreshold(data.ae_threshold ?? 0.75);
         setIfScore(data.if_score);
@@ -115,7 +118,11 @@ export const useDetection = () => {
         setIsConnected(false);
         if (mounted.current) reconnectTimer.current = window.setTimeout(() => connectWs(), 3000);
       },
-      () => setIsConnected(true)
+      () => {
+        lastFrameReceivedAt.current = Date.now();
+        lastFrameSentAt.current = 0;
+        setIsConnected(true);
+      }
     );
   }, [ws]);
 
@@ -129,9 +136,23 @@ export const useDetection = () => {
     };
   }, [connectWs, ws]);
 
-  const sendFrame = useCallback((data: string) => {
-    // Send string directly if it's already a string, or stringify if object
-    ws.send(data);
+  // Recover a half-open socket: it can stay OPEN while the server has stopped
+  // answering frames, leaving the dashboard permanently connected at zero.
+  useEffect(() => {
+    const watchdog = window.setInterval(() => {
+      const awaitingResponse = lastFrameSentAt.current > lastFrameReceivedAt.current;
+      if (isConnected && awaitingResponse && Date.now() - lastFrameReceivedAt.current > 8000) {
+        lastFrameSentAt.current = 0;
+        ws.disconnect();
+      }
+    }, 2000);
+    return () => window.clearInterval(watchdog);
+  }, [isConnected, ws]);
+
+  const sendFrame = useCallback((data: string): boolean => {
+    const sent = ws.send(data);
+    if (sent) lastFrameSentAt.current = Date.now();
+    return sent;
   }, [ws]);
 
   return {
