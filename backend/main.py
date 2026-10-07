@@ -1,23 +1,24 @@
 from contextlib import asynccontextmanager
+import os
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import auth, detection, clustering, metrics, alerts
-from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load ML models after uvicorn is up — avoids OOM on startup
     detection.load_models()
     yield
 
-app = FastAPI(title="DriverSafe API", lifespan=lifespan)
 
+app = FastAPI(title="DriverSafe API", lifespan=lifespan)
 origins = [
     os.getenv("FRONTEND_URL", "https://driversafe.vercel.app"),
-    "https://driversafe.vercel.app", # Explicitly allow production Vercel URL
+    "https://driversafe.vercel.app",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -37,9 +38,11 @@ app.include_router(clustering.router, prefix="/api/cluster", tags=["clustering"]
 app.include_router(metrics.router, prefix="/api/metrics", tags=["metrics"])
 app.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])
 
+
 @app.get("/")
 def read_root():
     return {"status": "DriverSafe API is running"}
+
 
 @app.get("/health")
 def health_check():

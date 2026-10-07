@@ -1,56 +1,75 @@
 {
   "clustering": {
-    "silhouette": -0.069,
-    "davies_bouldin": 2.266,
-    "wcss": 18559.28,
+    "silhouette": 0.588,
+    "davies_bouldin": 0.943,
+    "wcss": 194397.73,
     "wcss_list": [
-      20000.0,
-      19160.76,
-      18559.28,
-      18121.09,
-      17744.72,
-      17423.79,
-      17161.17
+      820461.06,
+      320383.08,
+      194397.73,
+      183817.08,
+      177582.28,
+      175335.66,
+      171194.3
     ],
     "optimal_k": 3
   },
   "detection": {
-    "f1_score": 0.537,
-    "roc_auc": 0.867,
-    "precision": 0.367,
-    "recall": 1.0
+    "f1_score": 0.475,
+    "roc_auc": 0.892639,
+    "precision": 0.312,
+    "recall": 1.0,
+    "accuracy": 0.77925
+  },
+  "roc_curve": {
+    "fpr": [
+      0.0,
+      0.21472222222222223,
+      0.2452777777777778,
+      0.2777777777777778,
+      1.0
+    ],
+    "tpr": [
+      0.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "auc": 0.892639
   },
   "confusion": {
-    "tp": 200,
-    "fp": 345,
+    "tp": 400,
+    "fp": 883,
     "fn": 0,
-    "tn": 955
+    "tn": 2717
   },
-  "ae_threshold": 1.483943,
+  "ae_threshold": 1.298449,
   "model_comparison": {
     "autoencoder": {
-      "f1": 0.533,
-      "precision": 0.364,
+      "f1": 0.471,
+      "precision": 0.308,
       "recall": 1.0,
-      "roc_auc": 0.865
+      "roc_auc": 1.0
     },
     "isolation_forest": {
-      "f1": 0.533,
-      "precision": 0.364,
+      "f1": 0.471,
+      "precision": 0.308,
       "recall": 1.0,
-      "roc_auc": 0.865
+      "roc_auc": 0.995489
     },
     "lof": {
-      "f1": 0.54,
-      "precision": 0.37,
+      "f1": 0.483,
+      "precision": 0.318,
       "recall": 1.0,
-      "roc_auc": 0.869
+      "roc_auc": 1.0
     },
     "ensemble": {
-      "f1": 0.537,
-      "precision": 0.367,
+      "f1": 0.475,
+      "precision": 0.312,
       "recall": 1.0,
-      "roc_auc": 0.867
+      "roc_auc": 0.892639,
+      "accuracy": 0.77925
     }
   }
 }

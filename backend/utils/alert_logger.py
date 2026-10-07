@@ -31,10 +31,12 @@ class AlertLogger:
             "state": state,
             "ae_error": scores.get("ae_error", 0.0),
             "if_score": scores.get("if_score", 0.0),
-            "lof": scores.get("lof", 0.0),
+            "lof": scores.get("lof_score", scores.get("lof", 0.0)),
             "confidence": scores.get("confidence", 1.0),
             "models": scores.get("models", ["AE", "IF", "LOF"]),
-            "votes": scores.get("votes", 0)
+            "votes": scores.get("votes", 0),
+            "model_alerts": scores.get("model_alerts", {}),
+            "live_signals": scores.get("live_signals", {})
         }
         alerts.append(new_alert)
         self._write_alerts(alerts)

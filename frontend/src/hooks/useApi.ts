@@ -7,6 +7,10 @@ import {
   getLiveClusters,
   getKMeans,
   getPCA,
+  getLiveMetrics,
+  getLiveRoc,
+  getLiveTimeline,
+  getLiveClusterValidation,
   DetectionWebSocket,
   AllMetrics,
   AlertHistoryResponse,
@@ -15,12 +19,17 @@ import {
   KMeansResponse,
   PCAResponse,
   MockFrameResponse,
+  LiveMetrics,
+  LiveTimeline,
+  LiveRocCurve,
+  LiveClusterValidation,
 } from "../lib/api";
 
 // --- useMetrics ---
 
 export const useMetrics = () => {
   const [data, setData] = useState<AllMetrics | null>(null);
+  const [liveData, setLiveData] = useState<LiveMetrics | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<Error | null>(null);
 
@@ -41,7 +50,113 @@ export const useMetrics = () => {
     fetchMetrics();
   }, [fetchMetrics]);
 
-  return { data, loading, error, refetch: fetchMetrics };
+  useEffect(() => {
+    let active = true;
+    const fetchLive = async () => {
+      try {
+        const result = await getLiveMetrics();
+        if (active) setLiveData(result);
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+    fetchLive();
+    const interval = window.setInterval(fetchLive, 5000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, []);
+
+  return {
+    data,
+    liveData,
+    isLive: liveData?.source === "live",
+    liveFrames: liveData?.live_frames ?? 0,
+    framesNeeded: liveData?.frames_needed ?? 10,
+    loading,
+    error,
+    refetch: fetchMetrics,
+  };
+};
+
+export const useLiveMetrics = () => {
+  const [liveData, setLiveData] = useState<LiveMetrics | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await getLiveMetrics();
+        if (active) { setLiveData(result); setError(null); }
+      } catch (err) {
+        if (active) setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 3000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, []);
+
+  return { liveData, loading, error, isLive: liveData?.source === "live" };
+};
+
+export const useLiveTimeline = () => {
+  const [data, setData] = useState<LiveTimeline | null>(null);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await getLiveTimeline();
+        if (active) setData(result);
+      } catch (err) {
+        console.error("Failed to fetch live reconstruction timeline", err);
+      }
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 1000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, []);
+  return data;
+};
+
+export const useLiveRoc = () => {
+  const [data, setData] = useState<LiveRocCurve | null>(null);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await getLiveRoc();
+        if (active) setData(result);
+      } catch (err) {
+        console.error("Failed to fetch live ROC curve", err);
+      }
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 3000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, []);
+  return data;
+};
+
+export const useLiveClusterValidation = () => {
+  const [data, setData] = useState<LiveClusterValidation | null>(null);
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const result = await getLiveClusterValidation();
+        if (active) setData(result);
+      } catch (err) {
+        console.error("Failed to fetch live cluster validation", err);
+      }
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 3000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, []);
+  return data;
 };
 
 // --- useAlerts ---
@@ -146,6 +261,8 @@ export const useDetection = () => {
   const [alertCount, setAlertCount] = useState<number>(0);
   const [liveSignals, setLiveSignals] = useState({ eye_closure: false, yawn: false, model_consensus: false });
   const [faceDetected, setFaceDetected] = useState(false);
+  const [sessionFrames, setSessionFrames] = useState(0);
+  const [liveMetrics, setLiveMetrics] = useState<LiveMetrics | null>(null);
   const mounted = useRef(false);
   const wasAlerting = useRef(false);
   const reconnectTimer = useRef<number | undefined>(undefined);
@@ -163,6 +280,8 @@ export const useDetection = () => {
         setFaceFrameCount(data.valid_face_frames ?? 0);
         setFaceDetected(data.face_detected ?? false);
         setLiveSignals(data.live_signals ?? { eye_closure: false, yawn: false, model_consensus: false });
+        setSessionFrames(data.session_frames ?? 0);
+        if (data.live_metrics) setLiveMetrics(data.live_metrics);
         
         if (data.is_drowsy) {
           setCurrentState("DROWSY");
@@ -210,6 +329,8 @@ export const useDetection = () => {
     alertCount,
     liveSignals,
     faceDetected,
+    sessionFrames,
+    liveMetrics,
     reconnect: connectWs,
     sendFrame
   };

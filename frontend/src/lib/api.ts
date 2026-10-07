@@ -106,10 +106,55 @@ export interface AllMetrics {
   detection: DetectionMetrics;
   confusion: ConfusionMatrix;
   roc: RocCurve;
+  live?: LiveMetrics;
+}
+
+export interface LiveMetrics extends DetectionMetrics {
+  confusion: ConfusionMatrix | { tp: number; fp: number; fn: number; tn: number };
+  source: "live" | "offline";
+  metric_kind?: "heuristic_estimate";
+  frames_needed: number;
+  live_frames: number;
+  total_frames?: number;
+  drowsy_frames?: number;
+  alert_frames?: number;
+  avg_ae_error?: number;
+  avg_if_score?: number;
+  avg_lof_score?: number;
+}
+
+export interface LiveRocCurve extends RocCurve {
+  source: "live" | "offline";
+  metric_kind?: "heuristic_estimate";
+}
+
+export interface LiveTimeline {
+  timeline: Array<{ frame: number; error: number; threshold: number; is_drowsy: boolean }>;
+  threshold: number;
 }
 
 export const getAllMetrics = async (): Promise<AllMetrics> => {
   const response = await fetch(`${BASE_URL}/api/metrics/all`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const getLiveMetrics = async (): Promise<LiveMetrics> => {
+  const response = await fetch(`${BASE_URL}/api/metrics/live`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const getLiveRoc = async (): Promise<LiveRocCurve> => {
+  const response = await fetch(`${BASE_URL}/api/metrics/live/roc`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const getLiveTimeline = async (): Promise<LiveTimeline> => {
+  const response = await fetch(`${BASE_URL}/api/metrics/live/timeline`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const resetLiveSession = async (): Promise<{ status: string; message: string }> => {
+  const response = await fetch(`${BASE_URL}/api/metrics/reset`, { method: "POST", headers: getHeaders() });
   return handleResponse(response);
 };
 
@@ -205,6 +250,14 @@ export interface Point2D {
 export interface LiveClusterResponse {
   points: Point2D[];
   count: number;
+  source?: "live";
+}
+
+export interface LiveClusterValidation {
+  silhouette_score: number;
+  davies_bouldin_score: number;
+  count: number;
+  source: "live" | "training";
 }
 
 export interface PCAResponse {
@@ -246,6 +299,11 @@ export const getLiveClusters = async (): Promise<LiveClusterResponse> => {
   return handleResponse(response);
 };
 
+export const getLiveClusterValidation = async (): Promise<LiveClusterValidation> => {
+  const response = await fetch(`${BASE_URL}/api/cluster/live/validation`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
 export const getHierarchical = async (): Promise<HierarchicalResponse> => {
   const response = await fetch(`${BASE_URL}/api/cluster/hierarchical`, { headers: getHeaders() });
   return handleResponse(response);
@@ -276,6 +334,9 @@ export interface MockFrameResponse {
   confidence?: number;
   model_alerts?: { autoencoder: boolean; isolation_forest: boolean; lof: boolean };
   live_signals?: { eye_closure: boolean; yawn: boolean; model_consensus: boolean };
+  session_frames?: number;
+  session_drowsy?: number;
+  live_metrics?: LiveMetrics;
 }
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {

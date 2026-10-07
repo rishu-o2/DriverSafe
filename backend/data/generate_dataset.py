@@ -134,14 +134,14 @@ def generate_and_save():
     print("Generating synthetic facial landmark dataset...")
 
     # Generate data
-    alert_data      = generate_alert_data(1000)
-    transition_data = generate_transition_data(300)
-    drowsy_data     = generate_drowsy_data(200)
+    alert_data      = generate_alert_data(3000)
+    transition_data = generate_transition_data(600)
+    drowsy_data     = generate_drowsy_data(400)
 
     # Create labels
-    alert_labels      = np.zeros(1000)       # 0 = alert
-    transition_labels = np.ones(300)          # 1 = transition
-    drowsy_labels     = np.full(200, 2)       # 2 = drowsy
+    alert_labels      = np.zeros(len(alert_data))       # 0 = alert
+    transition_labels = np.ones(len(transition_data))   # 1 = transition
+    drowsy_labels     = np.full(len(drowsy_data), 2)    # 2 = drowsy
 
     # Combine all data
     X = np.vstack([alert_data, transition_data, drowsy_data])

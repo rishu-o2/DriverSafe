@@ -6,7 +6,7 @@ import numpy as np
 from typing import Dict, Any
 from time import monotonic
 
-from utils.live_session import record_frame
+from utils.live_session import get_session, record_frame
 from utils.alert_logger import AlertLogger
 
 router = APIRouter()
@@ -34,8 +34,6 @@ class Autoencoder:
                 np.maximum(output, 0, out=output)
         return np.mean(np.square(np.asarray(values, dtype=np.float32) - output), axis=1)
 
-# Models are lazy-loaded via load_models() called from FastAPI lifespan
-# to avoid OOM crashes on startup in memory-constrained environments
 _autoencoder = None
 _ae_threshold = 1.5
 _MODELS_LOADED = False
@@ -56,8 +54,6 @@ class LiveStreamTracker:
     def update(self, features, model_consensus):
         now = monotonic()
         values = np.asarray(features, dtype=np.float32)
-
-        # Features 14 and 15 are eye aspect ratios scaled by 2.5.
         eyes_closed = values[14] < 0.48 and values[15] < 0.48
         if eyes_closed:
             self.eye_closed_since = self.eye_closed_since or now
@@ -76,8 +72,6 @@ class LiveStreamTracker:
             or perclos
         )
 
-        # Require a sustained yawn so talking or a single noisy landmark frame
-        # does not create an event; repeated yawns remain tracked for the minute.
         mouth_open = values[3] >= 0.55
         if mouth_open:
             self.yawn_since = self.yawn_since or now
@@ -120,45 +114,35 @@ def apply_live_tracking(result, features, tracker):
 
 def load_models():
     """Load all ML models once at app startup (called from main.py lifespan)."""
-    global _scaler, _iso_forest, _lof, _autoencoder, _ae_threshold, _MODELS_LOADED, _runtime_models
+    global _autoencoder, _ae_threshold, _MODELS_LOADED, _runtime_models
     try:
         _runtime_models = np.load(os.path.join(MODELS_DIR, "runtime_models.npz"))
         weights = np.load(os.path.join(MODELS_DIR, "autoencoder.npz"))
         _autoencoder = Autoencoder(weights)
-
-        with open(os.path.join(MODELS_DIR, "results.json")) as f:
-            _ae_threshold = json.load(f).get("ae_threshold", 1.5)
-
+        with open(os.path.join(MODELS_DIR, "results.json")) as results_file:
+            _ae_threshold = json.load(results_file).get("ae_threshold", 1.5)
         _MODELS_LOADED = True
         print("[detection] NumPy inference models loaded successfully.")
-    except Exception as e:
-        print(f"[detection] Failed to load models: {e}. Using mock detection.")
+    except Exception as exc:
+        print(f"[detection] Failed to load models: {exc}. Using mock detection.")
         _MODELS_LOADED = False
+
 
 def process_features(frame_number: int, frame_features: np.ndarray, tracker: LiveStreamTracker) -> Dict[str, Any]:
     """Process exactly 20 features through the models."""
     if not _MODELS_LOADED:
         result = process_frame_mock(frame_number)
         return apply_live_tracking(result, frame_features, tracker)
-        
+
     frame_scaled = (frame_features.reshape(1, -1) - _runtime_models["scaler_mean"]) / _runtime_models["scaler_scale"]
-    
-    # Autoencoder prediction
     ae_error = float(_autoencoder.reconstruction_error(frame_scaled)[0])
     ae_alert = ae_error > _ae_threshold
-    
-    # Isolation Forest prediction
     if_score_raw = _isolation_forest_decision(frame_scaled[0], _runtime_models)
     if_alert = if_score_raw < 0
-    
-    # LOF prediction
     lof_score_raw = _lof_decision(frame_scaled[0], _runtime_models)
     lof_alert = lof_score_raw < 0
-    
-    # Ensemble voting: 2 of 3 = drowsy
     votes = sum([ae_alert, if_alert, lof_alert])
     is_drowsy = votes >= 2
-    
     result = {
         "frame": frame_number,
         "ae_error": round(ae_error, 3),
@@ -173,7 +157,7 @@ def process_features(frame_number: int, frame_features: np.ndarray, tracker: Liv
             "isolation_forest": bool(if_alert),
             "lof": bool(lof_alert),
         },
-        "face_detected": True
+        "face_detected": True,
     }
     return apply_live_tracking(result, frame_features, tracker)
 
@@ -215,20 +199,17 @@ def _lof_decision(values: np.ndarray, model) -> float:
     lof = float(np.mean(model["lof_training_lrd"][nearest]) / local_density)
     return -lof - float(model["lof_offset"])
 
+
 def process_frame_mock(frame_number: int) -> Dict[str, Any]:
     np.random.seed(frame_number % 100)
-    
     ae_error = float(np.random.normal(0.5, 0.2))
     if_score = float(np.random.normal(0.4, 0.15))
     lof_score = float(np.random.normal(1.0, 0.4))
-    
     ae_alert = ae_error > 0.75
     if_alert = if_score > 0.6
     lof_alert = lof_score > 1.5
-    
     votes = sum([ae_alert, if_alert, lof_alert])
     is_drowsy = votes >= 2
-    
     return {
         "frame": frame_number,
         "ae_error": round(ae_error, 3),
@@ -243,19 +224,34 @@ def process_frame_mock(frame_number: int) -> Dict[str, Any]:
             "isolation_forest": bool(if_alert),
             "lof": bool(lof_alert),
         },
-        "face_detected": True
+        "face_detected": True,
     }
+
 
 @router.get("/status")
 async def get_status() -> Dict[str, str]:
     return {
         "status": "Detection API is running (browser landmarks + real models)" if _MODELS_LOADED else "Detection API is running (Mock)",
-        "websocket_url": "ws://localhost:8000/api/detection/ws"
+        "websocket_url": "ws://localhost:8000/api/detection/ws",
     }
+
 
 @router.get("/mock/{frame}")
 async def get_mock_detection(frame: int) -> Dict[str, Any]:
     return process_frame_mock(frame)
+
+
+def _record_live_result(result):
+    session = get_session()
+    session.record_frame_result(result)
+    result["session_frames"] = session.total_predictions
+    result["session_drowsy"] = sum(1 for item in session.recent_results if item["is_drowsy"])
+    if session.total_predictions % 30 == 0:
+        live_metrics = session.compute_live_metrics()
+        if live_metrics:
+            result["live_metrics"] = live_metrics
+    return result
+
 
 @router.websocket("/ws")
 async def detection_websocket(websocket: WebSocket):
@@ -268,7 +264,6 @@ async def detection_websocket(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             frame_count += 1
-            
             try:
                 payload = json.loads(data)
                 raw_features = payload.get("features") if isinstance(payload, dict) else None
@@ -299,13 +294,13 @@ async def detection_websocket(websocket: WebSocket):
                     }
                     record_frame()
                     was_alerting = False
-                
+                result = _record_live_result(result.copy())
                 await websocket.send_json(result)
-            except Exception as e:
-                print(f"Error processing frame {frame_count}: {e}")
+            except Exception as exc:
+                print(f"Error processing frame {frame_count}: {exc}")
                 tracker.reset_on_missing_face()
                 was_alerting = False
-                await websocket.send_json({
+                result = {
                     "frame": frame_count,
                     "valid_face_frames": valid_face_frames,
                     "ae_error": 0.0,
@@ -318,7 +313,9 @@ async def detection_websocket(websocket: WebSocket):
                     "confidence": 0.0,
                     "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
                     "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
-                })
-                
+                }
+                record_frame()
+                result = _record_live_result(result)
+                await websocket.send_json(result)
     except WebSocketDisconnect:
         print("Client disconnected from detection websocket")

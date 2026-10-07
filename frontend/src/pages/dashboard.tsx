@@ -29,8 +29,8 @@ import {
   YAxis,
 } from 'recharts';
 import { Link, useLocation } from 'wouter';
-import { useMetrics, useAlerts, useClustering, useDetection, useLiveClusters } from '../hooks/useApi';
-import { exportAlerts, removeToken } from '../lib/api';
+import { useMetrics, useLiveMetrics, useLiveTimeline, useLiveRoc, useLiveClusterValidation, useAlerts, useClustering, useDetection, useLiveClusters } from '../hooks/useApi';
+import { exportAlerts, removeToken, resetLiveSession } from '../lib/api';
 import { createFaceLandmarker, extractFaceFeatures } from '../lib/face-landmarks';
 
 type DashboardView = 'live' | 'cluster' | 'metrics' | 'history' | 'settings';
@@ -253,9 +253,9 @@ function AnalyticsStatCard({ value, label, note, tone = 'cyan', testId }: { valu
 }
 
 function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
-  const { isConnected, currentState, aeError, aeThreshold, frameCount, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
+  const { isConnected, currentState, aeError, aeThreshold, ifScore, lofScore, frameCount, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
   const colors = chartColors();
-  const [reconstructionData, setReconstructionData] = useState<Array<{ frame: number, error: number }>>([]);
+  const liveTimeline = useLiveTimeline();
   const videoRef = useRef<HTMLVideoElement>(null);
   const landmarkerRef = useRef<Awaited<ReturnType<typeof createFaceLandmarker>> | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
@@ -337,16 +337,6 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
     };
   }, [isConnected, cameraActive, sendFrame]);
 
-  useEffect(() => {
-    if (frameCount > 0) {
-      setReconstructionData(prev => {
-        const newData = [...prev, { frame: frameCount, error: aeError }];
-        if (newData.length > 50) return newData.slice(newData.length - 50);
-        return newData;
-      });
-    }
-  }, [frameCount, aeError]);
-
   // Removed early return to always show UI
 
   const votes = [
@@ -354,8 +344,6 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
     ['Yawn', liveSignals.yawn ? 'Alert' : 'Clear', liveSignals.yawn ? '100%' : '0%', liveSignals.yawn ? 'amber' : 'mint'],
     ['ML consensus', liveSignals.model_consensus ? 'Alert' : 'Clear', liveSignals.model_consensus ? '100%' : '0%', liveSignals.model_consensus ? 'amber' : 'cyan'],
   ];
-  const liveSignalCount = Object.values(liveSignals).filter(Boolean).length;
-
   return (
     <div className="dashboard-content dashboard-analytics-content" data-testid="panel-live-monitor">
       <div className="dashboard-analytics-heading">
@@ -367,7 +355,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
       </div>
 
       <section className="dashboard-analytics-stat-grid" aria-label="Live session statistics">
-        <AnalyticsStatCard value={faceFrameCount.toLocaleString()} label="Face frames evaluated" note={faceFrameCount > 0 ? 'Valid landmarks sent to models' : 'Waiting for face landmarks'} testId="card-live-frames" />
+        <AnalyticsStatCard value={(detection.sessionFrames || faceFrameCount).toLocaleString()} label="Face frames evaluated" note={faceFrameCount > 0 ? 'Valid landmarks sent to models' : 'Waiting for face landmarks'} testId="card-live-frames" />
         <AnalyticsStatCard value={alertCount.toString()} label="Drowsy events" note="Alert episodes this session" tone="alert" testId="card-live-alerts" />
         <AnalyticsStatCard value={metrics?.detection.f1_score?.toFixed(2) || 'N/A'} label="Validation F1" note="Offline score · updates after retraining" tone="amber" testId="card-live-f1" />
         <AnalyticsStatCard value={isConnected ? 'Active' : 'Offline'} label="Session status" note={isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
@@ -403,9 +391,9 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
             </div>
             <div className="dashboard-score-grid">
               <FeedScore label="Alert" value={currentState} tone={currentState === 'DROWSY' ? 'amber' : 'mint'} />
-              <FeedScore label="Error" value={aeError.toFixed(2)} />
-              <FeedScore label="AE threshold" value={aeThreshold.toFixed(2)} tone="amber" />
-              <FeedScore label="Live cues" value={`${liveSignalCount}/3`} tone="cyan" />
+              <FeedScore label="AE error" value={aeError.toFixed(2)} />
+              <FeedScore label="IF score" value={ifScore.toFixed(3)} tone={ifScore < 0 ? 'amber' : 'mint'} />
+              <FeedScore label="LOF score" value={lofScore.toFixed(3)} tone={lofScore < 0 ? 'amber' : 'mint'} />
             </div>
           </DashboardPanel>
         </div>
@@ -414,12 +402,12 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
           <DashboardPanel title="Reconstruction Error" eyebrow="Autoencoder signal" className="dashboard-chart-panel">
             <div className="dashboard-chart dashboard-chart--compact">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={reconstructionData}>
+                <LineChart data={liveTimeline?.timeline || []}>
                   <CartesianGrid stroke={colors.line} strokeDasharray="3 5" vertical={false} />
                   <XAxis dataKey="frame" tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} />
                   <YAxis domain={[0, Math.max(1.1, aeThreshold * 1.1)]} tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={26} />
                   <Tooltip contentStyle={{ background: colors.panel, border: `1px solid ${colors.line}`, color: colors.ice, fontSize: 11 }} />
-                  <ReferenceLine y={aeThreshold} stroke={colors.amber} strokeDasharray="4 4" />
+                  <ReferenceLine y={liveTimeline?.threshold ?? aeThreshold} stroke={colors.amber} strokeDasharray="4 4" />
                   <Line type="monotone" dataKey="error" stroke={colors.cyan} strokeWidth={2} dot={false} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
@@ -460,7 +448,7 @@ function FeedScore({ label, value, tone = 'neutral' }: { label: string; value: s
   );
 }
 
-function ScatterPanel({ title, eyebrow, series, badge }: { title: string; eyebrow: string; series: Array<{ name: string; color: string; data: Array<{ x: number; y: number }> }>; badge?: string }) {
+function ScatterPanel({ title, eyebrow, series, badge }: { title: string; eyebrow: string; series: Array<{ name: string; color: string; data: Array<{ x: number; y: number }>; shape?: 'circle' | 'square'; opacity?: number }>; badge?: string }) {
   const colors = chartColors();
   return (
     <DashboardPanel title={title} eyebrow={eyebrow} action={badge && <span className="dashboard-panel-badge">{badge}</span>}>
@@ -471,7 +459,7 @@ function ScatterPanel({ title, eyebrow, series, badge }: { title: string; eyebro
             <XAxis type="number" dataKey="x" tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} />
             <YAxis type="number" dataKey="y" tick={{ fill: colors.muted, fontSize: 9 }} tickLine={false} axisLine={false} width={25} />
             <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ background: colors.panel, border: `1px solid ${colors.line}`, color: colors.ice, fontSize: 11 }} />
-            {series.map((item) => <Scatter key={item.name} name={item.name} data={item.data} fill={item.color} />)}
+            {series.map((item) => <Scatter key={item.name} name={item.name} data={item.data} fill={item.color} shape={item.shape} fillOpacity={item.opacity ?? 1} />)}
           </ScatterChart>
         </ResponsiveContainer>
       </div>
@@ -485,6 +473,7 @@ function ScatterPanel({ title, eyebrow, series, badge }: { title: string; eyebro
 function ClusteringPanel() {
   const { validation, kmeans, pca, loading, error } = useClustering();
   const livePoints = useLiveClusters();
+  const liveValidation = useLiveClusterValidation();
   const colors = chartColors();
 
   // Removed early returns to preserve UI
@@ -498,6 +487,7 @@ function ClusteringPanel() {
   const liveClusterSeries = [0, 1, 2].map((label) => ({
     name: `Live cluster ${label + 1}`,
     color: [colors.cyan, colors.amber, colors.alert][label],
+    shape: 'square' as const,
     data: livePoints.filter(point => point.label === label).map(({ x, y }) => ({ x, y })),
   }));
   const liveDensitySeries = [...new Set(livePoints.map(point => point.density_label ?? -1))].sort((a, b) => a - b).map(label => ({
@@ -516,13 +506,19 @@ function ClusteringPanel() {
         <span className="dashboard-session-code">UNIT / II — IV</span>
       </div>
       <div className="dashboard-chart-grid dashboard-chart-grid--two">
-        <ScatterPanel title="PCA Scatter Plot" eyebrow="Unit IV · Eye openness / head tilt" series={[
-          { name: 'Alert', color: colors.mint, data: pcaAlert },
-          { name: 'Transition', color: colors.amber, data: pcaTransition },
-          { name: 'Drowsy', color: colors.alert || '#ff6b6b', data: pcaDrowsy },
+        <ScatterPanel title="PCA Scatter Plot" eyebrow="Training data + live camera session" series={[
+          { name: 'Training · Alert', color: colors.mint, data: pcaAlert, shape: 'circle', opacity: 0.24 },
+          { name: 'Training · Transition', color: colors.amber, data: pcaTransition, shape: 'circle', opacity: 0.24 },
+          { name: 'Training · Drowsy', color: colors.alert || '#ff6b6b', data: pcaDrowsy, shape: 'circle', opacity: 0.24 },
           ...liveClusterSeries,
         ]} />
-        <ScatterPanel title="Live camera clusters" eyebrow="PCA projection · recent face frames" badge={`${livePoints.length} frames`} series={liveClusterSeries} />
+        <ScatterPanel title="Live camera clusters" eyebrow={`PCA projection · ${liveValidation?.source === 'live' ? 'live validation' : 'training validation'}`} badge={`${livePoints.length} frames`} series={liveClusterSeries} />
+        <DashboardPanel title="Live Cluster Validation" eyebrow={`${liveValidation?.source === 'live' ? 'Camera session' : 'Training fallback'} · ${liveValidation?.count || 0} frames`}>
+          <div className="dashboard-metric-tile-grid">
+            <MetricTile value={liveValidation?.silhouette_score.toFixed(2) || 'N/A'} label="Silhouette score" note={liveValidation?.source === 'live' ? 'Live camera clusters' : 'Training data'} />
+            <MetricTile value={liveValidation?.davies_bouldin_score.toFixed(2) || 'N/A'} label="Davies-Bouldin" note={liveValidation?.source === 'live' ? 'Live camera clusters' : 'Training data'} tone="cyan" />
+          </div>
+        </DashboardPanel>
         <DashboardPanel title="Elbow Method — WCSS vs k" eyebrow="Unit II · Cluster validation" action={<span className="dashboard-panel-badge">Optimal k={validation?.optimal_k || 3}</span>}>
           <div className="dashboard-chart dashboard-chart--scatter">
             <ResponsiveContainer width="100%" height="100%">
@@ -558,14 +554,20 @@ function MetricTile({ value, label, note, tone = 'mint' }: { value: string; labe
 
 function MetricsPanel() {
   const { data, loading, error } = useMetrics();
+  const { liveData } = useLiveMetrics();
+  const liveRoc = useLiveRoc();
   const colors = chartColors();
 
   // Removed early returns
 
   const clustering = data?.clustering;
-  const detection = data?.detection;
-  const confusion = data?.confusion;
-  const roc = data?.roc;
+  const detection = liveData ? { ...data?.detection, ...liveData } : data?.detection;
+  const rawConfusion = liveData?.confusion ?? data?.confusion;
+  const confusion = rawConfusion && ('true_positive' in rawConfusion
+    ? rawConfusion
+    : { true_positive: rawConfusion.tp, false_positive: rawConfusion.fp, false_negative: rawConfusion.fn, true_negative: rawConfusion.tn });
+  const roc = liveRoc ?? data?.roc;
+  const liveSource = liveData?.source ?? 'offline';
 
   const rocData = roc?.fpr.map((fpr, i) => ({ fpr, tpr: roc.tpr[i] })) || [];
 
@@ -578,6 +580,11 @@ function MetricsPanel() {
         </div>
         <span className="dashboard-session-code">UNIT / V — VI</span>
       </div>
+      <p className="dashboard-chart-note"><span className={`dashboard-live-dot${liveSource === 'live' ? '' : ' is-offline'}`} aria-hidden="true" /> {liveSource === 'live'
+        ? `Live camera estimate · ${liveData?.live_frames || 0} frames analyzed`
+        : liveData?.live_frames
+          ? `Offline metrics · collecting ${liveData.live_frames}/${liveData.live_frames + liveData.frames_needed} camera frames`
+          : 'Offline metrics · connect camera to collect live session data'}</p>
       <div className="dashboard-metric-panels">
         <DashboardPanel title="Clustering Validation" eyebrow="Unit II · VI">
           <div className="dashboard-metric-tile-grid">
@@ -589,10 +596,11 @@ function MetricsPanel() {
         </DashboardPanel>
         <DashboardPanel title="Detection Performance" eyebrow="Unit V · VI">
           <div className="dashboard-metric-tile-grid">
-            <MetricTile value={detection?.f1_score?.toFixed(2) || "N/A"} label="F1-Score" note="Offline validation · updates after retraining" />
-            <MetricTile value={detection?.roc_auc?.toFixed(2) || "N/A"} label="ROC-AUC" note="Saved model validation" />
-            <MetricTile value={detection?.precision == null ? "N/A" : `${(detection.precision * 100).toFixed(0)}%`} label="Precision" note="Saved model validation" />
-            <MetricTile value={detection?.recall == null ? "N/A" : `${(detection.recall * 100).toFixed(0)}%`} label="Recall" note="Saved model validation" />
+            <MetricTile value={detection?.f1_score?.toFixed(2) || "N/A"} label="F1-Score" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} />
+            <MetricTile value={detection?.roc_auc?.toFixed(2) || "N/A"} label="ROC-AUC" note={liveRoc?.source === 'live' ? 'Live estimate' : 'Offline curve'} />
+            <MetricTile value={detection?.precision == null ? "N/A" : `${(detection.precision * 100).toFixed(0)}%`} label="Precision" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} />
+            <MetricTile value={detection?.recall == null ? "N/A" : `${(detection.recall * 100).toFixed(0)}%`} label="Recall" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} />
+            <MetricTile value={detection?.accuracy == null ? "N/A" : `${(detection.accuracy * 100).toFixed(0)}%`} label="Accuracy" note={liveSource === 'live' ? 'Live estimate' : 'Offline validation'} tone="cyan" />
           </div>
         </DashboardPanel>
         <DashboardPanel title="Confusion Matrix" eyebrow="Detection outcomes">
@@ -603,7 +611,7 @@ function MetricsPanel() {
             <ConfusionCell value={confusion?.true_negative.toString() || "0"} label="True Negative" tone="mint" />
           </div>
         </DashboardPanel>
-        <DashboardPanel title={`ROC Curve · AUC = ${detection?.roc_auc?.toFixed(2) || "N/A"}`} eyebrow="Detection threshold">
+        <DashboardPanel title={`ROC Curve · AUC = ${roc?.auc?.toFixed(2) || detection?.roc_auc?.toFixed(2) || "N/A"}`} eyebrow={liveRoc?.source === 'live' ? 'Live camera threshold estimate' : 'Saved model threshold'}>
           <div className="dashboard-chart dashboard-chart--roc">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={rocData}>
@@ -741,6 +749,15 @@ function BreakdownRow({ label, value, tone }: { label: string; value: string; to
 }
 
 function SettingsPanel() {
+  const [resetStatus, setResetStatus] = useState('');
+  const resetSession = async () => {
+    try {
+      await resetLiveSession();
+      setResetStatus('Live session reset');
+    } catch {
+      setResetStatus('Could not reset live session');
+    }
+  };
   return (
     <div className="dashboard-content dashboard-analytics-content dashboard-subpage" data-testid="panel-settings">
       <div className="dashboard-analytics-heading">
@@ -760,10 +777,11 @@ function SettingsPanel() {
             <span className={active ? 'dashboard-setting-active' : ''}>{value as string}</span>
           </div>
         ))}
-        <button type="button" className="dashboard-quiet-button dashboard-settings-button" data-testid="button-save-settings">
-          Save configuration
+        <button type="button" className="dashboard-quiet-button dashboard-settings-button" data-testid="button-reset-live-session" onClick={resetSession}>
+          Reset Live Session
           <ChevronRight aria-hidden="true" />
         </button>
+        {resetStatus && <small role="status">{resetStatus}</small>}
       </section>
       <div className="dashboard-settings-note"><ShieldCheck aria-hidden="true" /><span>Monitoring remains local to this session until a camera source is connected.</span></div>
     </div>

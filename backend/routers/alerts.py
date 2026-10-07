@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter
+from fastapi import APIRouter
 from typing import Any, Dict
 import os
 import sys
@@ -24,13 +24,13 @@ async def get_alerts_stats() -> Dict[str, Any]:
     session = get_stats()
     frames = session["total_frames"]
     started_at = datetime.fromisoformat(session["session_started_at"])
-    session_alerts = [a for a in alerts if datetime.fromisoformat(a["timestamp"]) >= started_at]
+    session_alerts = [alert for alert in alerts if datetime.fromisoformat(alert["timestamp"]) >= started_at]
     duration_minutes = session["session_seconds"] / 60
     return {
         "total_frames": frames,
         "alert_frames": session["alert_frames"],
-        "drowsy_alerts": sum(1 for a in session_alerts if a.get("state", "").lower() == "drowsy"),
-        "yawn_alerts": sum(1 for a in session_alerts if a.get("state", "").lower() == "yawn"),
+        "drowsy_alerts": sum(1 for alert in session_alerts if alert.get("state", "").lower() == "drowsy"),
+        "yawn_alerts": sum(1 for alert in session_alerts if alert.get("state", "").lower() == "yawn"),
         "session_duration": f"{duration_minutes:.1f} min",
         "alert_rate": f"{(session['alert_frames'] / max(frames, 1) * 100):.1f}%",
     }

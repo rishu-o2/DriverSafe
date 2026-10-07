@@ -14,9 +14,11 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     roc_auc_score,
+    roc_curve,
     f1_score,
     precision_score,
-    recall_score
+    recall_score,
+    accuracy_score
 )
 import torch
 import torch.nn as nn
@@ -117,10 +119,10 @@ def train_autoencoder(X_train_scaled):
         **{name: tensor.detach().cpu().numpy() for name, tensor in state_dict.items()},
     )
 
-    # Compute threshold (95th percentile of training errors)
+    # Compute threshold (90th percentile of training errors)
     model.eval()
     errors    = model.reconstruction_error(X_tensor).numpy()
-    threshold = float(np.percentile(errors, 95))
+    threshold = float(np.percentile(errors, 90))
 
     print(f"Autoencoder saved")
     print(f"Reconstruction error threshold: {threshold:.6f}")
@@ -131,7 +133,7 @@ def train_isolation_forest(X_train_scaled):
     print("\nTraining Isolation Forest...")
     iso_forest = IsolationForest(
         n_estimators=200,
-        contamination=0.05,
+        contamination=0.10,
         random_state=42
     )
     iso_forest.fit(X_train_scaled)
@@ -145,7 +147,7 @@ def train_lof(X_train_scaled):
     print("\nTraining Local Outlier Factor...")
     lof = LocalOutlierFactor(
         n_neighbors=20,
-        contamination=0.05,
+        contamination=0.10,
         novelty=True
     )
     lof.fit(X_train_scaled)
@@ -197,7 +199,7 @@ def train_clustering(X_train_scaled, X_full_scaled, y_full):
     # KMeans
     kmeans = KMeans(n_clusters=3, init="k-means++",
                     random_state=42, n_init=10)
-    kmeans.fit(X_train_scaled)
+    kmeans.fit(X_full_scaled)
     joblib.dump(kmeans, os.path.join(MODELS_DIR, "kmeans.pkl"))
 
     # DBSCAN (no save needed — fit on full data)
@@ -212,7 +214,7 @@ def train_clustering(X_train_scaled, X_full_scaled, y_full):
     wcss_list = []
     for k in range(1, 8):
         km = KMeans(n_clusters=k, random_state=42, n_init=10)
-        km.fit(X_train_scaled)
+        km.fit(X_full_scaled)
         wcss_list.append(float(km.inertia_))
 
     # Validation metrics
@@ -262,21 +264,29 @@ def evaluate_models(model_ae, iso_forest, lof,
     # Ensemble: 2 of 3 = anomaly
     ensemble = ((ae_preds + if_preds + lof_preds) >= 2).astype(int)
 
-    def safe_metrics(y_true, y_pred):
+    if_scores = -iso_forest.decision_function(X_full_scaled)
+    lof_scores = -lof.decision_function(X_full_scaled)
+    vote_scores = ae_preds + if_preds + lof_preds
+
+    def safe_metrics(y_true, y_pred, scores):
         try:
             return {
                 "f1":        round(float(f1_score(y_true, y_pred, zero_division=0)), 3),
                 "precision": round(float(precision_score(y_true, y_pred, zero_division=0)), 3),
                 "recall":    round(float(recall_score(y_true, y_pred, zero_division=0)), 3),
-                "roc_auc":   round(float(roc_auc_score(y_true, y_pred)), 3),
+                "roc_auc":   round(float(roc_auc_score(y_true, scores)), 6),
             }
         except Exception:
             return {"f1": 0, "precision": 0, "recall": 0, "roc_auc": 0}
 
-    ae_metrics  = safe_metrics(y_binary, ae_preds)
-    if_metrics  = safe_metrics(y_binary, if_preds)
-    lof_metrics = safe_metrics(y_binary, lof_preds)
-    ens_metrics = safe_metrics(y_binary, ensemble)
+    ae_metrics  = safe_metrics(y_binary, ae_preds, ae_errors)
+    if_metrics  = safe_metrics(y_binary, if_preds, if_scores)
+    lof_metrics = safe_metrics(y_binary, lof_preds, lof_scores)
+    ens_metrics = safe_metrics(y_binary, ensemble, vote_scores)
+    ens_metrics["accuracy"] = round(float(accuracy_score(y_binary, ensemble)), 6)
+
+    fpr_arr, tpr_arr, _ = roc_curve(y_binary, vote_scores)
+    roc_auc = round(float(roc_auc_score(y_binary, vote_scores)), 6)
 
     cm = confusion_matrix(y_binary, ensemble)
     tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
@@ -300,6 +310,12 @@ def evaluate_models(model_ae, iso_forest, lof,
             "tp": int(tp), "fp": int(fp),
             "fn": int(fn), "tn": int(tn)
         },
+        "roc_curve": {
+            "fpr": fpr_arr.tolist(),
+            "tpr": tpr_arr.tolist(),
+            "auc": roc_auc
+        },
+        "accuracy": round(float(accuracy_score(y_binary, ensemble)), 6),
         "ae_threshold": round(float(threshold), 6)
     }
 
@@ -315,10 +331,12 @@ def save_results(clustering_results, eval_results):
         },
         "detection": {
             "f1_score":   eval_results["ensemble"]["f1"],
-            "roc_auc":    eval_results["ensemble"]["roc_auc"],
+            "roc_auc":    eval_results["roc_curve"]["auc"],
             "precision":  eval_results["ensemble"]["precision"],
             "recall":     eval_results["ensemble"]["recall"],
+            "accuracy":   eval_results["accuracy"],
         },
+        "roc_curve": eval_results["roc_curve"],
         "confusion":  eval_results["confusion"],
         "ae_threshold": eval_results["ae_threshold"],
         "model_comparison": {
