@@ -6,18 +6,61 @@ let landmarkerPromise: Promise<FaceLandmarker> | null = null;
 
 export function createFaceLandmarker(): Promise<FaceLandmarker> {
   if (!landmarkerPromise) {
-    landmarkerPromise = FilesetResolver.forVisionTasks(
-      `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`,
-    ).then((fileset) => FaceLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: MODEL_URL },
-      runningMode: 'VIDEO',
-      numFaces: 1,
-      // Mobile selfie cameras often have softer focus and uneven lighting.
-      // A lower confidence floor helps retain landmarks in those conditions.
-      minFaceDetectionConfidence: 0.2,
-      minFacePresenceConfidence: 0.2,
-      minTrackingConfidence: 0.2,
-    }));
+    const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+    const isChrome = typeof navigator !== 'undefined' && /Chrome/i.test(navigator.userAgent);
+    const preferredDelegate = isAndroid || isChrome ? 'CPU' : 'GPU';
+    const wasmUrl = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VERSION}/wasm`;
+
+    console.log('Device:', typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown');
+    console.log('Is Android:', isAndroid);
+    console.log('Using delegate:', preferredDelegate);
+
+    landmarkerPromise = (async () => {
+      const createWithDelegate = async (delegate: 'CPU' | 'GPU') => {
+        console.log('Loading WASM from CDN...');
+        const vision = await FilesetResolver.forVisionTasks(wasmUrl);
+        console.log('Loading model from CDN...');
+        return FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate },
+          runningMode: 'VIDEO',
+          numFaces: 1,
+          outputFaceBlendshapes: false,
+          // Mobile selfie cameras often have softer focus and uneven lighting.
+          // A lower confidence floor helps retain landmarks in those conditions.
+          minFaceDetectionConfidence: 0.2,
+          minFacePresenceConfidence: 0.2,
+          minTrackingConfidence: 0.2,
+        });
+      };
+
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          let landmarker: FaceLandmarker;
+          if (preferredDelegate === 'GPU') {
+            try {
+              landmarker = await createWithDelegate('GPU');
+            } catch (gpuError) {
+              console.warn('GPU delegate failed; trying CPU:', gpuError);
+              landmarker = await createWithDelegate('CPU');
+            }
+          } else {
+            landmarker = await createWithDelegate('CPU');
+          }
+          console.log('Face landmarker ready!');
+          return landmarker;
+        } catch (error) {
+          lastError = error;
+          console.error(`Face landmarker initialization attempt ${attempt + 1} failed:`, error);
+          if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        }
+      }
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    })().catch((error) => {
+      // Let a later call retry instead of permanently caching a rejected promise.
+      landmarkerPromise = null;
+      throw error;
+    });
   }
   return landmarkerPromise;
 }
