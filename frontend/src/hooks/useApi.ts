@@ -45,6 +45,7 @@ export const useDetection = () => {
   const [lofScore, setLofScore] = useState<number>(0);
   const [frameCount, setFrameCount] = useState<number>(0);
   const [faceFrameCount, setFaceFrameCount] = useState<number>(0);
+  const [faceFramesSent, setFaceFramesSent] = useState<number>(0);
   const [alertCount, setAlertCount] = useState<number>(0);
   const [liveSignals, setLiveSignals] = useState({ eye_closure: false, yawn: false, model_consensus: false });
   const [faceDetected, setFaceDetected] = useState(false);
@@ -154,7 +155,17 @@ export const useDetection = () => {
 
   const sendFrame = useCallback((data: string): boolean => {
     const sent = ws.send(data);
-    if (sent) lastFrameSentAt.current = Date.now();
+    if (sent) {
+      lastFrameSentAt.current = Date.now();
+      try {
+        const payload = JSON.parse(data);
+        if (payload.face_detected === true && Array.isArray(payload.features) && payload.features.length === 20) {
+          setFaceFramesSent((previous) => previous + 1);
+        }
+      } catch {
+        console.warn('Sent detection frame with an unparseable client payload');
+      }
+    }
     return sent;
   }, [ws]);
 
@@ -167,6 +178,7 @@ export const useDetection = () => {
     lofScore,
     frameCount,
     faceFrameCount,
+    faceFramesSent,
     alertCount,
     liveSignals,
     faceDetected,

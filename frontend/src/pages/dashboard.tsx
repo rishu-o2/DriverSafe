@@ -414,7 +414,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
       </div>
 
       <section className="dashboard-analytics-stat-grid" aria-label="Live session statistics">
-        <AnalyticsStatCard value={faceFrameCount.toLocaleString()} label="Face frames evaluated" note={faceFrameCount > 0 ? 'Valid landmarks sent to models' : 'Waiting for face landmarks'} testId="card-live-frames" />
+        <AnalyticsStatCard value={detection.faceFramesSent.toLocaleString()} label="Face frames sent" note={faceFrameCount > 0 ? `${faceFrameCount} acknowledged by backend` : detection.faceFramesSent > 0 ? 'Waiting for backend acknowledgement' : 'Waiting for MediaPipe feature frames'} testId="card-live-frames" />
         <AnalyticsStatCard value={alertCount.toString()} label="Drowsy events" note="Alert episodes this session" tone="alert" testId="card-live-alerts" />
         <AnalyticsStatCard value={detection.liveMetrics?.avg_ae_error?.toFixed(2) || 'N/A'} label="Live AE error" note={`${faceFrameCount} live face frames`} tone="amber" testId="card-live-f1" />
         <AnalyticsStatCard value={detection.modelAvailable === false ? 'Rules only' : isConnected ? 'Active' : 'Offline'} label="Session status" note={detection.modelAvailable === false ? 'Inference models unavailable; temporal eye/yawn cues remain active' : isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
