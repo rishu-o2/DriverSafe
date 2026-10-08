@@ -247,9 +247,33 @@ async def detection_websocket(websocket: WebSocket):
                 raw_features = payload.get("features") if isinstance(payload, dict) else None
                 if isinstance(payload, dict) and payload.get("face_detected") and isinstance(raw_features, list) and len(raw_features) == 20:
                     features = np.asarray(raw_features, dtype=np.float32)
-                    result = process_features(frame_count, features, tracker)
-                    result["features"] = [float(value) for value in features]
+                    if not np.isfinite(features).all():
+                        raise ValueError("Face feature vector contains non-finite values")
+                    # Count valid face vectors as soon as the backend accepts them.
+                    # Previously inference ran first, so a model error made a real
+                    # received face frame look like a no-face frame to the client.
                     valid_face_frames += 1
+                    try:
+                        result = process_features(frame_count, features, tracker)
+                    except Exception as inference_error:
+                        print(f"Error running detection models for frame {frame_count}: {inference_error}")
+                        tracker.reset_on_missing_face()
+                        result = {
+                            "frame": frame_count,
+                            "ae_error": 0.0,
+                            "ae_threshold": round(_ae_threshold, 3),
+                            "if_score": 0.0,
+                            "lof_score": 0.0,
+                            "is_drowsy": False,
+                            "votes": 0,
+                            "confidence": 0.0,
+                            "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
+                            "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
+                            "face_detected": True,
+                            "model_available": _MODELS_LOADED,
+                            "processing_error": str(inference_error),
+                        }
+                    result["features"] = [float(value) for value in features]
                     result["valid_face_frames"] = valid_face_frames
                     record_frame(features, result["is_drowsy"])
                     if result["is_drowsy"] and not was_alerting:

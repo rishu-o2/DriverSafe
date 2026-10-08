@@ -68,6 +68,9 @@ export const useDetection = () => {
     ws.connect(
       (data: DetectionFrameResponse) => {
         lastFrameReceivedAt.current = Date.now();
+        if (data.processing_error) {
+          console.error('Backend accepted a face frame but model inference failed:', data.processing_error);
+        }
         setAeError(data.ae_error);
         setAeThreshold(data.ae_threshold ?? 0.75);
         setIfScore(data.if_score);

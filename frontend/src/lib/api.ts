@@ -346,6 +346,7 @@ export interface DetectionFrameResponse {
   features?: number[];
   models?: string[];
   model_available?: boolean;
+  processing_error?: string;
 }
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
