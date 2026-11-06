@@ -10,7 +10,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import Dashboard from '@/pages/dashboard';
 import NotFound from '@/pages/not-found';
-import { login, signup, saveToken, isLoggedIn } from '@/lib/api';
+import { getCurrentUser, login, signup } from '@/lib/api';
 
 const queryClient = new QueryClient();
 gsap.registerPlugin(ScrollTrigger);
@@ -161,12 +161,10 @@ function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
 
     try {
       if (isLogin) {
-        const res = await login(email, password);
-        saveToken(res.access_token);
+        await login(email, password);
       } else {
         const name = form.get('name') as string;
-        const res = await signup(name, email, password);
-        saveToken(res.access_token);
+        await signup(name, email, password);
       }
       setSubmitted(true);
       setLocation('/welcome');
@@ -249,14 +247,17 @@ function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
 
 function ProtectedRoute({ component: Component }: { component: any }) {
   const [, setLocation] = useLocation();
-  
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+
   useEffect(() => {
-    if (!isLoggedIn()) {
-      setLocation('/login');
-    }
+    let active = true;
+    getCurrentUser()
+      .then(() => { if (active) setAuthenticated(true); })
+      .catch(() => { if (active) { setAuthenticated(false); setLocation('/login'); } });
+    return () => { active = false; };
   }, [setLocation]);
-  
-  return isLoggedIn() ? <Component /> : null;
+
+  return authenticated ? <Component /> : null;
 }
 
 function Router() {

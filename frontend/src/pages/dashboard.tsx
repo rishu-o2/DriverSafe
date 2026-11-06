@@ -28,7 +28,7 @@ import {
   YAxis,
 } from 'recharts';
 import { Link, useLocation } from 'wouter';
-import { removeToken, resetLiveSession } from '../lib/api';
+import { logout, resetLiveSession } from '../lib/api';
 import { useDetection } from '../hooks/useApi';
 import { createFaceLandmarker, extractFaceFeatures } from '../lib/face-landmarks';
 
@@ -100,9 +100,14 @@ export default function Dashboard() {
   const sessionDuration = formatSessionDuration(sessionSeconds);
   const sessionStatus = detection.isConnected ? 'Live detection connected' : 'Detection disconnected';
 
-  const signOut = () => {
-    removeToken();
-    setLocation('/login');
+  const signOut = async () => {
+    try {
+      await logout();
+    } catch {
+      // Leave routing to the auth endpoint on the next protected page visit.
+    } finally {
+      setLocation('/login');
+    }
   };
 
   const selectView = (view: DashboardView) => {

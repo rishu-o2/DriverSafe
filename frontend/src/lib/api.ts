@@ -1,33 +1,16 @@
 export const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 export const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000";
 
-// --- Token Storage Helpers ---
-
-export const saveToken = (token: string): void => {
-  localStorage.setItem("access_token", token);
-};
-
-export const getToken = (): string | null => {
-  return localStorage.getItem("access_token");
-};
-
-export const removeToken = (): void => {
-  localStorage.removeItem("access_token");
-};
-
-export const isLoggedIn = (): boolean => {
-  return !!getToken();
-};
-
 // --- API Helpers ---
 
 const getHeaders = (): HeadersInit => {
-  const token = getToken();
   return {
     "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 };
+
+const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) =>
+  fetch(input, { credentials: "include", ...init });
 
 const handleResponse = async (response: Response) => {
   if (!response.ok) {
@@ -46,14 +29,12 @@ const handleResponse = async (response: Response) => {
 // --- Auth Functions ---
 
 export interface AuthResponse {
-  access_token: string;
-  token_type: string;
+  username: string;
   name?: string;
-  email?: string;
 }
 
 export const login = async (username: string, password: string): Promise<AuthResponse> => {
-  const response = await fetch(`${BASE_URL}/api/auth/login`, {
+  const response = await apiFetch(`${BASE_URL}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -62,12 +43,22 @@ export const login = async (username: string, password: string): Promise<AuthRes
 };
 
 export const signup = async (name: string, email: string, password: string): Promise<AuthResponse> => {
-  const response = await fetch(`${BASE_URL}/api/auth/signup`, {
+  const response = await apiFetch(`${BASE_URL}/api/auth/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username: email, password, name }), // sending email as username for backend
   });
   return handleResponse(response);
+};
+
+export const getCurrentUser = async (): Promise<AuthResponse> => {
+  const response = await apiFetch(`${BASE_URL}/api/auth/me`);
+  return handleResponse(response);
+};
+
+export const logout = async (): Promise<void> => {
+  const response = await apiFetch(`${BASE_URL}/api/auth/logout`, { method: "POST" });
+  if (!response.ok) throw new Error("Unable to log out");
 };
 
 // --- Metrics Functions ---
@@ -140,47 +131,47 @@ export interface LiveTimeline {
 }
 
 export const getAllMetrics = async (): Promise<AllMetrics> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/all`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/all`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getLiveMetrics = async (): Promise<LiveMetrics> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/live`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/live`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getLiveRoc = async (): Promise<LiveRocCurve> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/live/roc`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/live/roc`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getLiveTimeline = async (): Promise<LiveTimeline> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/live/timeline`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/live/timeline`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const resetLiveSession = async (): Promise<{ status: string; message: string }> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/reset`, { method: "POST", headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/reset`, { method: "POST", headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getClusteringMetrics = async (): Promise<ClusteringMetrics> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/clustering`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/clustering`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getDetectionMetrics = async (): Promise<DetectionMetrics> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/detection`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/detection`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getConfusionMatrix = async (): Promise<ConfusionMatrix> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/confusion`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/confusion`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getRocCurve = async (): Promise<RocCurve> => {
-  const response = await fetch(`${BASE_URL}/api/metrics/roc`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/metrics/roc`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
@@ -213,17 +204,17 @@ export interface AlertStats {
 }
 
 export const getAlertHistory = async (): Promise<AlertHistoryResponse> => {
-  const response = await fetch(`${BASE_URL}/api/alerts/history`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/alerts/history`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getAlertStats = async (): Promise<AlertStats> => {
-  const response = await fetch(`${BASE_URL}/api/alerts/stats`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/alerts/stats`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const exportAlerts = async (): Promise<string> => {
-  const response = await fetch(`${BASE_URL}/api/alerts/export`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/alerts/export`, { headers: getHeaders() });
   if (!response.ok) throw new Error("Failed to export alerts");
   return response.text();
 };
@@ -286,37 +277,37 @@ export interface ValidationResponse {
 }
 
 export const getKMeans = async (): Promise<KMeansResponse> => {
-  const response = await fetch(`${BASE_URL}/api/cluster/kmeans`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/cluster/kmeans`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getDBSCAN = async (): Promise<DBSCANResponse> => {
-  const response = await fetch(`${BASE_URL}/api/cluster/dbscan`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/cluster/dbscan`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getPCA = async (): Promise<PCAResponse> => {
-  const response = await fetch(`${BASE_URL}/api/cluster/pca`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/cluster/pca`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getLiveClusters = async (): Promise<LiveClusterResponse> => {
-  const response = await fetch(`${BASE_URL}/api/cluster/live`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/cluster/live`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getLiveClusterValidation = async (): Promise<LiveClusterValidation> => {
-  const response = await fetch(`${BASE_URL}/api/cluster/live/validation`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/cluster/live/validation`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getHierarchical = async (): Promise<HierarchicalResponse> => {
-  const response = await fetch(`${BASE_URL}/api/cluster/hierarchical`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/cluster/hierarchical`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
 export const getValidation = async (): Promise<ValidationResponse> => {
-  const response = await fetch(`${BASE_URL}/api/cluster/validation`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/cluster/validation`, { headers: getHeaders() });
   return handleResponse(response);
 };
 
@@ -350,7 +341,7 @@ export interface DetectionFrameResponse {
 }
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
-  const response = await fetch(`${BASE_URL}/api/detection/status`, { headers: getHeaders() });
+  const response = await apiFetch(`${BASE_URL}/api/detection/status`, { headers: getHeaders() });
   return handleResponse(response);
 };
 

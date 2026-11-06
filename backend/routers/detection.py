@@ -1,13 +1,16 @@
 import os
 import json
 from collections import deque
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 import numpy as np
 from typing import Dict, Any
 from time import monotonic
 
 from utils.live_session import get_session, record_frame
 from utils.alert_logger import AlertLogger
+from routers.auth import decode_access_token, COOKIE_NAME, get_current_user
+from utils.security import get_allowed_origins
+from database import SessionLocal, User
 
 router = APIRouter()
 
@@ -38,7 +41,7 @@ _autoencoder = None
 _ae_threshold = 1.5
 _MODELS_LOADED = False
 _runtime_models = None
-_alert_logger = AlertLogger(os.path.join(BASE_DIR, "data", "alerts", "alerts.json"))
+_alert_logger = AlertLogger()
 
 
 class LiveStreamTracker:
@@ -222,8 +225,8 @@ async def get_status() -> Dict[str, str]:
     }
 
 
-def _record_live_result(result):
-    session = get_session()
+def _record_live_result(result, user_id):
+    session = get_session(user_id)
     session.record_frame_result(result)
     result["session_frames"] = session.total_predictions
     result["session_drowsy"] = sum(1 for item in session.recent_results if item["is_drowsy"])
@@ -233,14 +236,31 @@ def _record_live_result(result):
 
 @router.websocket("/ws")
 async def detection_websocket(websocket: WebSocket):
+    origin = websocket.headers.get("origin", "").rstrip("/")
+    if not origin or origin not in get_allowed_origins():
+        await websocket.close(code=1008, reason="Origin not allowed")
+        return
+    token = websocket.cookies.get(COOKIE_NAME)
+    payload = decode_access_token(token) if token else None
+    if not payload or not payload.get("sub"):
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.username == payload["sub"]).first()
+        user_id = user.id if user else None
+    if user_id is None:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+    session = get_session(user_id)
     await websocket.accept()
-    frame_count = 0
-    valid_face_frames = 0
+    frame_count = session.total_frames
+    valid_face_frames = session.face_frames
     was_alerting = False
     tracker = LiveStreamTracker()
     try:
         while True:
             data = await websocket.receive_text()
+            session = get_session(user_id)
             frame_count += 1
             try:
                 payload = json.loads(data)
@@ -275,9 +295,9 @@ async def detection_websocket(websocket: WebSocket):
                         }
                     result["features"] = [float(value) for value in features]
                     result["valid_face_frames"] = valid_face_frames
-                    record_frame(features, result["is_drowsy"])
+                    record_frame(features, result["is_drowsy"], user_id)
                     if result["is_drowsy"] and not was_alerting:
-                        _alert_logger.log_alert(frame_count, "DROWSY", result)
+                        _alert_logger.log_alert(user_id, frame_count, "DROWSY", result)
                     was_alerting = result["is_drowsy"]
                 else:
                     tracker.reset_on_missing_face()
@@ -295,9 +315,9 @@ async def detection_websocket(websocket: WebSocket):
                         "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
                         "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
                     }
-                    record_frame()
+                    record_frame(user_id=user_id)
                     was_alerting = False
-                result = _record_live_result(result.copy())
+                result = _record_live_result(result.copy(), user_id)
                 await websocket.send_json(result)
             except Exception as exc:
                 print(f"Error processing frame {frame_count}: {exc}")
@@ -317,8 +337,8 @@ async def detection_websocket(websocket: WebSocket):
                     "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
                     "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
                 }
-                record_frame()
-                result = _record_live_result(result)
+                record_frame(user_id=user_id)
+                result = _record_live_result(result, user_id)
                 await websocket.send_json(result)
     except WebSocketDisconnect:
         print("Client disconnected from detection websocket")
