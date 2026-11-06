@@ -1,11 +1,34 @@
 {
-  "version": 2,
-  "buildCommand": "pnpm --filter @workspace/driversafe run build",
-  "outputDirectory": "frontend/dist/public",
-  "installCommand": "pnpm install",
-  "framework": null,
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "backend": {
+      "root": "backend",
+      "framework": "fastapi",
+      "entrypoint": "app:app",
+      "buildCommand": "python build.py",
+      "functions": {
+        "app.py": {
+          "maxDuration": 300,
+          "includeFiles": "saved_models/**"
+        }
+      }
+    },
+    "frontend": {
+      "root": "frontend",
+      "framework": "vite",
+      "installCommand": "cd .. && pnpm install",
+      "buildCommand": "cd .. && pnpm --filter @workspace/driversafe run build",
+      "outputDirectory": "dist/public"
+    }
+  },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- frontend/ pnpm-workspace.yaml pnpm-lock.yaml"
+    {
+      "source": "/api/(.*)",
+      "destination": { "service": "backend" }
+    },
+    {
+      "source": "/(.*)",
+      "destination": { "service": "frontend" }
+    }
+  ]
 }

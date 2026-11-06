@@ -1,5 +1,6 @@
-export const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-export const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8000";
+// Vercel routes /api on the same deployment origin to the backend service.
+// Relative URLs also keep local frontend/backend proxy setups configurable.
+export const BASE_URL = import.meta.env.VITE_API_URL || "";
 
 // --- API Helpers ---
 
@@ -360,8 +361,9 @@ export class DetectionWebSocket {
       this.disconnect();
     }
     
-    // Convert http(s) URL to ws(s) if VITE_WS_URL wasn't provided properly
-    const wsUrl = `${WS_URL}/api/detection/ws`;
+    // The same-origin Vercel route sends this handshake to the backend service.
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${window.location.host}/api/detection/ws`;
     this.ws = new WebSocket(wsUrl);
     this.ws.onopen = () => onOpen?.();
 
