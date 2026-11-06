@@ -18,7 +18,13 @@
       "framework": "vite",
       "installCommand": "cd .. && pnpm install",
       "buildCommand": "cd .. && pnpm --filter @workspace/driversafe run build",
-      "outputDirectory": "dist/public"
+      "outputDirectory": "dist/public",
+      "rewrites": [
+        {
+          "source": "/(.*)",
+          "destination": "/index.html"
+        }
+      ]
     }
   },
   "rewrites": [
