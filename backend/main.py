@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 load_dotenv()
 
-from database import Base, engine
+from database import Base, engine, migrate_alert_episode_columns
 from routers import auth, detection, clustering, metrics, alerts
 from utils.security import get_allowed_origins
 
@@ -15,6 +15,7 @@ from utils.security import get_allowed_origins
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    migrate_alert_episode_columns()
     detection.load_models()
     yield
 

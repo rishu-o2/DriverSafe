@@ -98,7 +98,11 @@ export default function Dashboard() {
   }, [detection.isConnected]);
 
   const sessionDuration = formatSessionDuration(sessionSeconds);
-  const sessionStatus = detection.isConnected ? 'Live detection connected' : 'Detection disconnected';
+  const sessionStatus = !detection.isConnected
+    ? 'Detection disconnected'
+    : detection.phase === 'calibrating'
+      ? 'Calibrating driver baseline'
+      : 'Live detection connected';
 
   const signOut = async () => {
     try {
@@ -420,10 +424,16 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
 
       <section className="dashboard-analytics-stat-grid" aria-label="Live session statistics">
         <AnalyticsStatCard value={detection.faceFramesSent.toLocaleString()} label="Face frames sent" note={faceFrameCount > 0 ? `${faceFrameCount} acknowledged by backend` : detection.faceFramesSent > 0 ? 'Waiting for backend acknowledgement' : 'Waiting for MediaPipe feature frames'} testId="card-live-frames" />
-        <AnalyticsStatCard value={alertCount.toString()} label="Drowsy events" note="Alert episodes this session" tone="alert" testId="card-live-alerts" />
+        <AnalyticsStatCard value={alertCount.toString()} label="Alert events" note="Cooldown-approved episodes this session" tone="alert" testId="card-live-alerts" />
         <AnalyticsStatCard value={detection.liveMetrics?.avg_ae_error?.toFixed(2) || 'N/A'} label="Live AE error" note={`${faceFrameCount} live face frames`} tone="amber" testId="card-live-f1" />
-        <AnalyticsStatCard value={detection.modelAvailable === false ? 'Rules only' : isConnected ? 'Active' : 'Offline'} label="Session status" note={detection.modelAvailable === false ? 'Inference models unavailable; temporal eye/yawn cues remain active' : isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
+        <AnalyticsStatCard value={!isConnected ? 'Offline' : detection.phase === 'calibrating' ? `${Math.round(detection.calibrationProgress * 100)}%` : detection.modelAvailable === false ? 'Rules only' : 'Active'} label={detection.phase === 'calibrating' ? 'Driver calibration' : 'Session status'} note={detection.phase === 'calibrating' ? 'Look naturally and stay alert; alerts are paused during calibration' : detection.modelAvailable === false ? 'Inference models unavailable; temporal eye/yawn cues remain active' : isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
       </section>
+      {isConnected && detection.phase === 'calibrating' && (
+        <div className="dashboard-chart-note" role="status" aria-live="polite">
+          Calibrating your normal face features: {Math.round(detection.calibrationProgress * 100)}%
+          <progress value={detection.calibrationProgress} max={1} aria-label="Driver calibration progress" />
+        </div>
+      )}
 
       <div className="dashboard-live-grid">
         <div className="dashboard-live-primary">
@@ -766,8 +776,8 @@ function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<ty
   const alertRows = detection.alerts;
   const yawnEvents = alertRows.filter((alert) => alert.models.some((model) => model.toLowerCase().includes('yawn'))).length;
   const handleDownload = () => {
-    const headers = ['id', 'timestamp', 'frame', 'state', 'ae_error', 'if_score', 'lof', 'confidence', 'models'];
-    const rows = alertRows.map((alert) => [alert.id, alert.timestamp, alert.frame ?? '', alert.state, alert.ae_error, alert.if_score, alert.lof, alert.confidence, alert.models.join('|')]);
+    const headers = ['id', 'timestamp', 'end_timestamp', 'peak_severity', 'frame', 'state', 'ae_error', 'if_score', 'lof', 'confidence', 'models'];
+    const rows = alertRows.map((alert) => [alert.id, alert.timestamp, alert.end_timestamp ?? '', alert.peak_severity ?? alert.confidence, alert.frame ?? '', alert.state, alert.ae_error, alert.if_score, alert.lof, alert.confidence, alert.models.join('|')]);
     const csv = [headers, ...rows].map((row) => row.map((cell) => '"' + String(cell).replaceAll('"', '""') + '"').join(',')).join('\n');
     downloadAlertCsv(csv);
   };
@@ -788,13 +798,13 @@ function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<ty
     <div className="dashboard-content dashboard-analytics-content" data-testid="panel-alert-history">
       <div className="dashboard-analytics-heading">
         <div>
-          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Live session alerts</p>
-          <h2>Events from the current camera stream.</h2>
+          <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Driver alert history</p>
+          <h2>Episodes recorded for this account.</h2>
         </div>
         <span className="dashboard-session-code">{alertRows.length} LIVE EVENTS</span>
       </div>
-      <p className="dashboard-chart-note">This list is recorded from drowsy transitions received over the active WebSocket. It resets when this dashboard session ends.</p>
-      <DashboardPanel title="Live Alert Log" eyebrow="Current browser session" action={(
+      <p className="dashboard-chart-note">Each row is one drowsy episode, including episodes whose alert event was suppressed by the cooldown.</p>
+      <DashboardPanel title="Alert episodes" eyebrow="Current account history" action={(
         <div className="dashboard-history-actions">
           <span className="dashboard-alert-total">{alertRows.length} alerts</span>
           <button type="button" className="dashboard-export-button" onClick={handleDownload} data-testid="button-export-alerts">
@@ -805,13 +815,15 @@ function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<ty
         <div className="dashboard-alert-table-wrap">
           <table className="dashboard-alert-table">
             <thead>
-              <tr>{['#', 'Timestamp', 'State', 'AE Error', 'IF Score', 'LOF', 'Confidence', 'Signals'].map((heading) => <th key={heading}>{heading}</th>)}</tr>
+              <tr>{['#', 'Start', 'End', 'Peak severity', 'State', 'AE Error', 'IF Score', 'LOF', 'Signals'].map((heading) => <th key={heading}>{heading}</th>)}</tr>
             </thead>
             <tbody>
               {alertRows.map((alert) => (
                 <tr key={alert.id} data-testid={'row-alert-' + alert.id}>
                   <td>{alert.id.toString().padStart(3, '0')}</td>
                   <td>{new Date(alert.timestamp).toLocaleTimeString()}</td>
+                  <td>{alert.end_timestamp ? new Date(alert.end_timestamp).toLocaleTimeString() : 'Ongoing'}</td>
+                  <td>{((alert.peak_severity ?? alert.confidence) * 100).toFixed(0)}%</td>
                   <td><span className="dashboard-state-pill dashboard-state-pill--alert">{alert.state}</span></td>
                   <td>{alert.ae_error.toFixed(3)}</td>
                   <td>{alert.if_score.toFixed(3)}</td>
@@ -820,13 +832,13 @@ function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<ty
                   <td>{alert.models.join(', ')}</td>
                 </tr>
               ))}
-              {!alertRows.length && <tr><td colSpan={8}>No drowsy events in this live session.</td></tr>}
+              {!alertRows.length && <tr><td colSpan={9}>No drowsy events in this live session.</td></tr>}
             </tbody>
           </table>
         </div>
       </DashboardPanel>
       <div className="dashboard-history-grid">
-        <DashboardPanel title="Live Alert Frequency" eyebrow="Current session · 10 minute windows">
+        <DashboardPanel title="Alert Frequency" eyebrow="Account history · 10 minute windows">
           <div className="dashboard-chart dashboard-chart--frequency">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={frequency}>
@@ -841,7 +853,7 @@ function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<ty
         </DashboardPanel>
         <DashboardPanel title="Live Alert Breakdown" eyebrow={'Session: ' + sessionDuration + ' · ' + detection.sessionFrames + ' frames'}>
           <div className="dashboard-breakdown">
-            <BreakdownRow label="Drowsy events" value={detection.alertCount.toString()} tone="alert" />
+            <BreakdownRow label="Alert events" value={detection.alertCount.toString()} tone="alert" />
             <BreakdownRow label="Yawn-tagged events" value={yawnEvents.toString()} tone="amber" />
             <BreakdownRow label="Drowsy frames" value={(detection.liveMetrics?.drowsy_frames ?? 0).toString()} tone="mint" />
             <div className="dashboard-breakdown-divider" />

@@ -1,18 +1,39 @@
+import asyncio
 import os
 import json
+import math
 from collections import deque
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 import numpy as np
 from typing import Dict, Any
 from time import monotonic
 
-from utils.live_session import get_session, record_frame
+from utils.live_session import (
+    DISCONNECT_GRACE_SECONDS,
+    get_session,
+    record_frame,
+    set_session_expiry_handler,
+)
 from utils.alert_logger import AlertLogger
 from routers.auth import decode_access_token, COOKIE_NAME, get_current_user
 from utils.security import get_allowed_origins
 from database import SessionLocal, User
 
 router = APIRouter()
+
+try:
+    CALIBRATION_SECONDS = int(os.getenv("CALIBRATION_SECONDS", "30"))
+except ValueError as exc:
+    raise RuntimeError("CALIBRATION_SECONDS must be an integer from 30 to 60") from exc
+if not 30 <= CALIBRATION_SECONDS <= 60:
+    raise RuntimeError("CALIBRATION_SECONDS must be an integer from 30 to 60")
+
+try:
+    ALERT_COOLDOWN_SECONDS = float(os.getenv("ALERT_COOLDOWN_SECONDS", "30"))
+except ValueError as exc:
+    raise RuntimeError("ALERT_COOLDOWN_SECONDS must be a non-negative number") from exc
+if not math.isfinite(ALERT_COOLDOWN_SECONDS) or ALERT_COOLDOWN_SECONDS < 0:
+    raise RuntimeError("ALERT_COOLDOWN_SECONDS must be a non-negative number")
 
 BASE_DIR = os.path.dirname(__file__)
 MODELS_DIR = os.path.join(BASE_DIR, "..", "saved_models")
@@ -43,6 +64,13 @@ _MODELS_LOADED = False
 _runtime_models = None
 _alert_logger = AlertLogger()
 
+# Baseline adaptation stays within validated operating ranges so a noisy
+# calibration cannot make the temporal rules ineffective.
+EYE_THRESHOLD_MIN = 0.35
+EYE_THRESHOLD_MAX = 0.55
+MOUTH_THRESHOLD_MIN = 0.55
+MOUTH_THRESHOLD_MAX = 0.80
+
 
 class LiveStreamTracker:
     """Detect sustained fatigue cues from the ordered live landmark stream."""
@@ -54,10 +82,26 @@ class LiveStreamTracker:
         self.yawn_recorded = False
         self.yawn_times = deque()
 
-    def update(self, features, model_consensus):
+    def update(self, features, model_consensus, baseline=None):
         now = monotonic()
         values = np.asarray(features, dtype=np.float32)
-        eyes_closed = values[14] < 0.48 and values[15] < 0.48
+        left_eye_threshold = 0.48
+        right_eye_threshold = 0.48
+        mouth_threshold = 0.55
+        if baseline is not None:
+            means = baseline.get("mean", [])
+            stds = baseline.get("std", [])
+            if len(means) == 20 and len(stds) == 20:
+                left_eye_threshold = float(np.clip(
+                    means[14] - max(2.0 * stds[14], 0.18), EYE_THRESHOLD_MIN, EYE_THRESHOLD_MAX
+                ))
+                right_eye_threshold = float(np.clip(
+                    means[15] - max(2.0 * stds[15], 0.18), EYE_THRESHOLD_MIN, EYE_THRESHOLD_MAX
+                ))
+                mouth_threshold = float(np.clip(
+                    means[3] + max(2.0 * stds[3], 0.20), MOUTH_THRESHOLD_MIN, MOUTH_THRESHOLD_MAX
+                ))
+        eyes_closed = values[14] < left_eye_threshold and values[15] < right_eye_threshold
         if eyes_closed:
             self.eye_closed_since = self.eye_closed_since or now
         else:
@@ -75,7 +119,7 @@ class LiveStreamTracker:
             or perclos
         )
 
-        mouth_open = values[3] >= 0.55
+        mouth_open = values[3] >= mouth_threshold
         if mouth_open:
             self.yawn_since = self.yawn_since or now
         else:
@@ -107,8 +151,8 @@ class LiveStreamTracker:
         self.yawn_recorded = False
 
 
-def apply_live_tracking(result, features, tracker):
-    live = tracker.update(features, result["is_drowsy"])
+def apply_live_tracking(result, features, tracker, baseline=None):
+    live = tracker.update(features, result["is_drowsy"], baseline)
     result.update(live)
     signal_confidence = sum(live["live_signals"].values()) / 3
     result["confidence"] = round(max(float(result.get("confidence", 0)), signal_confidence), 3)
@@ -131,7 +175,7 @@ def load_models():
         _MODELS_LOADED = False
 
 
-def process_features(frame_number: int, frame_features: np.ndarray, tracker: LiveStreamTracker) -> Dict[str, Any]:
+def process_features(frame_number: int, frame_features: np.ndarray, tracker: LiveStreamTracker, baseline=None) -> Dict[str, Any]:
     """Process exactly 20 features through the models."""
     if not _MODELS_LOADED:
         result = {
@@ -147,7 +191,7 @@ def process_features(frame_number: int, frame_features: np.ndarray, tracker: Liv
             "face_detected": True,
             "model_available": False,
         }
-        return apply_live_tracking(result, frame_features, tracker)
+        return apply_live_tracking(result, frame_features, tracker, baseline)
 
     frame_scaled = (frame_features.reshape(1, -1) - _runtime_models["scaler_mean"]) / _runtime_models["scaler_scale"]
     ae_error = float(_autoencoder.reconstruction_error(frame_scaled)[0])
@@ -175,7 +219,69 @@ def process_features(frame_number: int, frame_features: np.ndarray, tracker: Liv
         "face_detected": True,
         "model_available": True,
     }
-    return apply_live_tracking(result, frame_features, tracker)
+    return apply_live_tracking(result, frame_features, tracker, baseline)
+
+
+def _calibrating_result(frame_number, calibration, face_detected):
+    return {
+        "frame": frame_number,
+        "ae_error": 0.0,
+        "ae_threshold": round(_ae_threshold, 3),
+        "if_score": 0.0,
+        "lof_score": 0.0,
+        "is_drowsy": False,
+        "votes": 0,
+        "confidence": 0.0,
+        "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
+        "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
+        "face_detected": bool(face_detected),
+        "model_available": _MODELS_LOADED,
+        "phase": calibration["phase"],
+        "progress": calibration["progress"],
+        "alert_event": False,
+    }
+
+
+def _complete_episode(session, user_id, event):
+    if not event:
+        return
+    episode_id = event.get("id")
+    if event["action"] == "started":
+        try:
+            episode_id = _alert_logger.start_episode(
+                user_id=user_id,
+                frame=event["frame"],
+                scores=event["scores"],
+                started_at=event["timestamp"],
+                peak_severity=event["peak_severity"],
+            )
+            session.set_active_episode_id(episode_id)
+        except Exception:
+            episode_id = None
+    elif event["action"] == "ended" and episode_id is not None:
+        try:
+            _alert_logger.finish_episode(episode_id, event["end_timestamp"], event["peak_severity"])
+        except Exception:
+            pass
+
+    event["id"] = episode_id
+    event.pop("scores", None)
+    event.pop("frame", None)
+    event["timestamp"] = event["timestamp"].isoformat()
+    event["end_timestamp"] = event["end_timestamp"].isoformat() if event["end_timestamp"] else None
+
+
+def _persist_expired_session(user_id, session):
+    _complete_episode(session, user_id, session.close_open_episode())
+
+
+set_session_expiry_handler(_persist_expired_session)
+
+
+async def _finish_disconnected_episode(user_id, session):
+    await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+    event = session.close_episode_after_disconnect(DISCONNECT_GRACE_SECONDS)
+    _complete_episode(session, user_id, event)
 
 
 def _average_path_length(size: int) -> float:
@@ -252,11 +358,11 @@ async def detection_websocket(websocket: WebSocket):
         await websocket.close(code=1008, reason="Authentication required")
         return
     session = get_session(user_id)
+    session.mark_connected()
     await websocket.accept()
     frame_count = session.total_frames
     valid_face_frames = session.face_frames
-    was_alerting = False
-    tracker = LiveStreamTracker()
+    tracker = session.get_or_create_detector_tracker(LiveStreamTracker)
     try:
         while True:
             data = await websocket.receive_text()
@@ -273,34 +379,45 @@ async def detection_websocket(websocket: WebSocket):
                     # Previously inference ran first, so a model error made a real
                     # received face frame look like a no-face frame to the client.
                     valid_face_frames += 1
-                    try:
-                        result = process_features(frame_count, features, tracker)
-                    except Exception as inference_error:
-                        print(f"Error running detection models for frame {frame_count}: {inference_error}")
-                        tracker.reset_on_missing_face()
-                        result = {
-                            "frame": frame_count,
-                            "ae_error": 0.0,
-                            "ae_threshold": round(_ae_threshold, 3),
-                            "if_score": 0.0,
-                            "lof_score": 0.0,
-                            "is_drowsy": False,
-                            "votes": 0,
-                            "confidence": 0.0,
-                            "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
-                            "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
-                            "face_detected": True,
-                            "model_available": _MODELS_LOADED,
-                            "processing_error": str(inference_error),
-                        }
+                    calibration = session.get_calibration_state(CALIBRATION_SECONDS)
+                    if calibration["phase"] == "calibrating":
+                        calibration = session.observe_calibration_frame(features, CALIBRATION_SECONDS)
+                        result = _calibrating_result(frame_count, calibration, True)
+                    else:
+                        try:
+                            result = process_features(
+                                frame_count,
+                                features,
+                                tracker,
+                                session.get_calibration_baseline(),
+                            )
+                        except Exception as inference_error:
+                            print(f"Error running detection models for frame {frame_count}: {inference_error}")
+                            tracker.reset_on_missing_face()
+                            result = {
+                                "frame": frame_count,
+                                "ae_error": 0.0,
+                                "ae_threshold": round(_ae_threshold, 3),
+                                "if_score": 0.0,
+                                "lof_score": 0.0,
+                                "is_drowsy": False,
+                                "votes": 0,
+                                "confidence": 0.0,
+                                "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
+                                "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
+                                "face_detected": True,
+                                "model_available": _MODELS_LOADED,
+                                "processing_error": str(inference_error),
+                            }
+                        result["phase"] = "active"
+                        result["progress"] = 1.0
                     result["features"] = [float(value) for value in features]
                     result["valid_face_frames"] = valid_face_frames
                     record_frame(features, result["is_drowsy"], user_id)
-                    if result["is_drowsy"] and not was_alerting:
-                        _alert_logger.log_alert(user_id, frame_count, "DROWSY", result)
-                    was_alerting = result["is_drowsy"]
                 else:
                     tracker.reset_on_missing_face()
+                    session.note_calibration_gap()
+                    calibration = session.get_calibration_state(CALIBRATION_SECONDS)
                     result = {
                         "frame": frame_count,
                         "valid_face_frames": valid_face_frames,
@@ -314,15 +431,32 @@ async def detection_websocket(websocket: WebSocket):
                         "confidence": 0.0,
                         "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
                         "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
+                        "phase": calibration["phase"],
+                        "progress": calibration["progress"],
                     }
                     record_frame(user_id=user_id)
-                    was_alerting = False
+                episode_event = session.update_episode(
+                    result["is_drowsy"],
+                    result.get("confidence", 0.0),
+                    ALERT_COOLDOWN_SECONDS,
+                    frame=frame_count,
+                    scores=result,
+                )
+                _complete_episode(session, user_id, episode_event)
+                result["alert_event"] = bool(
+                    episode_event
+                    and episode_event["action"] == "started"
+                    and episode_event["alert_event"]
+                )
+                if episode_event:
+                    result["episode_event"] = episode_event
                 result = _record_live_result(result.copy(), user_id)
                 await websocket.send_json(result)
             except Exception as exc:
                 print(f"Error processing frame {frame_count}: {exc}")
                 tracker.reset_on_missing_face()
-                was_alerting = False
+                session.note_calibration_gap()
+                calibration = session.get_calibration_state(CALIBRATION_SECONDS)
                 result = {
                     "frame": frame_count,
                     "valid_face_frames": valid_face_frames,
@@ -336,9 +470,19 @@ async def detection_websocket(websocket: WebSocket):
                     "confidence": 0.0,
                     "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
                     "live_signals": {"eye_closure": False, "yawn": False, "model_consensus": False},
+                    "phase": calibration["phase"],
+                    "progress": calibration["progress"],
                 }
                 record_frame(user_id=user_id)
+                episode_event = session.update_episode(False, 0.0, ALERT_COOLDOWN_SECONDS)
+                _complete_episode(session, user_id, episode_event)
+                result["alert_event"] = False
+                if episode_event:
+                    result["episode_event"] = episode_event
                 result = _record_live_result(result, user_id)
                 await websocket.send_json(result)
     except WebSocketDisconnect:
         print("Client disconnected from detection websocket")
+    finally:
+        session.mark_disconnected()
+        asyncio.create_task(_finish_disconnected_episode(user_id, session))

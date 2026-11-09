@@ -4,6 +4,7 @@ import {
   DetectionFrameResponse,
   LiveMetrics,
   Alert,
+  getAlertHistory,
 } from "../lib/api";
 
 // --- useDetection ---
@@ -55,15 +56,37 @@ export const useDetection = () => {
   const [recentFeatures, setRecentFeatures] = useState<number[][]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
+  const [phase, setPhase] = useState<"calibrating" | "active">("calibrating");
+  const [calibrationProgress, setCalibrationProgress] = useState(0);
   const resultsRef = useRef<DetectionFrameResponse[]>([]);
   const featuresRef = useRef<number[][]>([]);
   const mounted = useRef(false);
-  const wasAlerting = useRef(false);
   const reconnectTimer = useRef<number | undefined>(undefined);
   const lastFrameSentAt = useRef(0);
   const lastFrameReceivedAt = useRef(0);
 
   const [ws] = useState(() => new DetectionWebSocket());
+
+  const refreshAlerts = useCallback(async () => {
+    try {
+      const history = await getAlertHistory();
+      setAlerts((current) => {
+        const rows = new Map(history.alerts.map((alert) => [alert.id, alert]));
+        for (const alert of current) {
+          const stored = rows.get(alert.id);
+          rows.set(alert.id, stored ? {
+            ...stored,
+            ...alert,
+            end_timestamp: stored.end_timestamp ?? alert.end_timestamp,
+            peak_severity: Math.max(stored.peak_severity ?? stored.confidence, alert.peak_severity ?? alert.confidence),
+          } : alert);
+        }
+        return [...rows.values()].sort((left, right) => right.timestamp.localeCompare(left.timestamp)).slice(0, 100);
+      });
+    } catch {
+      // Live monitoring can continue when alert history is temporarily unavailable.
+    }
+  }, []);
 
   const connectWs = useCallback(() => {
     ws.connect(
@@ -80,6 +103,8 @@ export const useDetection = () => {
         setFaceFrameCount((previous) => previous + (data.face_detected ? 1 : 0));
         setFaceDetected(data.face_detected ?? false);
         setLiveSignals(data.live_signals ?? { eye_closure: false, yawn: false, model_consensus: false });
+        setPhase(data.phase ?? "active");
+        setCalibrationProgress(data.progress ?? 1);
         setSessionFrames((previous) => previous + 1);
         if (typeof data.model_available === "boolean") setModelAvailable(data.model_available);
 
@@ -95,25 +120,32 @@ export const useDetection = () => {
         
         if (data.is_drowsy) {
           setCurrentState("DROWSY");
-          if (!wasAlerting.current) {
-            setAlertCount((prev) => prev + 1);
-            const modelAlerts = data.model_alerts ?? { autoencoder: false, isolation_forest: false, lof: false };
-            setAlerts((previous) => [{
-              id: Date.now(),
-              timestamp: new Date().toISOString(),
-              state: "DROWSY",
-              ae_error: data.ae_error,
-              if_score: data.if_score,
-              lof: data.lof_score,
-              confidence: data.confidence ?? 0,
-              models: data.models ?? Object.entries(modelAlerts).filter(([, active]) => active).map(([name]) => name),
-              frame: data.frame,
-            }, ...previous].slice(0, 100));
-          }
         } else {
           setCurrentState("NORMAL");
         }
-        wasAlerting.current = data.is_drowsy;
+        if (data.alert_event) setAlertCount((previous) => previous + 1);
+        const episode = data.episode_event;
+        if (episode?.action === "started") {
+          const modelAlerts = data.model_alerts ?? { autoencoder: false, isolation_forest: false, lof: false };
+          setAlerts((previous) => [{
+            id: episode.id ?? Date.now(),
+            timestamp: episode.timestamp,
+            end_timestamp: episode.end_timestamp,
+            peak_severity: episode.peak_severity,
+            state: "DROWSY",
+            ae_error: data.ae_error,
+            if_score: data.if_score,
+            lof: data.lof_score,
+            confidence: data.confidence ?? 0,
+            models: data.models ?? Object.entries(modelAlerts).filter(([, active]) => active).map(([name]) => name),
+            frame: data.frame,
+          }, ...previous].slice(0, 100));
+        } else if (episode?.action === "ended") {
+          setAlerts((previous) => previous.map((alert) => {
+            const matches = episode.id !== null ? alert.id === episode.id : alert.timestamp === episode.timestamp;
+            return matches ? { ...alert, end_timestamp: episode.end_timestamp, peak_severity: episode.peak_severity, confidence: episode.peak_severity } : alert;
+          }));
+        }
       },
       (err) => {
         console.error("Detection WS error", err);
@@ -126,9 +158,10 @@ export const useDetection = () => {
         lastFrameReceivedAt.current = Date.now();
         lastFrameSentAt.current = 0;
         setIsConnected(true);
+        void refreshAlerts();
       }
     );
-  }, [ws]);
+  }, [refreshAlerts, ws]);
 
   useEffect(() => {
     mounted.current = true;
@@ -138,7 +171,7 @@ export const useDetection = () => {
       window.clearTimeout(reconnectTimer.current);
       ws.disconnect();
     };
-  }, [connectWs, ws]);
+  }, [connectWs, refreshAlerts, ws]);
 
   // Recover a half-open socket: it can stay OPEN while the server has stopped
   // answering frames, leaving the dashboard permanently connected at zero.
@@ -188,6 +221,8 @@ export const useDetection = () => {
     recentFeatures,
     alerts,
     modelAvailable,
+    phase,
+    calibrationProgress,
     reconnect: connectWs,
     sendFrame
   };

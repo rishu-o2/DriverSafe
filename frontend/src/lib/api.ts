@@ -181,6 +181,8 @@ export const getRocCurve = async (): Promise<RocCurve> => {
 export interface Alert {
   id: number;
   timestamp: string;
+  end_timestamp?: string | null;
+  peak_severity?: number;
   state: string;
   ae_error: number;
   if_score: number;
@@ -339,6 +341,17 @@ export interface DetectionFrameResponse {
   models?: string[];
   model_available?: boolean;
   processing_error?: string;
+  phase?: "calibrating" | "active";
+  progress?: number;
+  alert_event?: boolean;
+  episode_event?: {
+    action: "started" | "ended";
+    id: number | null;
+    timestamp: string;
+    end_timestamp: string | null;
+    peak_severity: number;
+    alert_event: boolean;
+  };
 }
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {

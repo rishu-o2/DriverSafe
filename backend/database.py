@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, JSON, String, create_engine
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, JSON, String, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 load_dotenv()
@@ -53,6 +53,8 @@ class Alert(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+    end_timestamp = Column(DateTime(timezone=True), nullable=True)
+    peak_severity = Column(Float, nullable=False, default=0.0)
     frame = Column(Integer, nullable=False)
     state = Column(String(50), nullable=False)
     ae_error = Column(Float, nullable=False, default=0.0)
@@ -63,6 +65,27 @@ class Alert(Base):
     votes = Column(Integer, nullable=False, default=0)
     model_alerts = Column(JSON, nullable=False, default=dict)
     live_signals = Column(JSON, nullable=False, default=dict)
+
+
+def migrate_alert_episode_columns():
+    """Add episode fields to an existing alerts table; safe to run at startup."""
+    if not inspect(engine).has_table("alerts"):
+        return
+
+    column_types = {
+        "end_timestamp": DateTime(timezone=True),
+        "peak_severity": Float(),
+    }
+    with engine.begin() as connection:
+        for column_name, column_type in column_types.items():
+            existing_columns = {column["name"] for column in inspect(connection).get_columns("alerts")}
+            if column_name not in existing_columns:
+                sql_type = column_type.compile(dialect=engine.dialect)
+                constraints = " NOT NULL DEFAULT 0" if column_name == "peak_severity" else ""
+                if engine.dialect.name == "postgresql":
+                    connection.execute(text(f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {column_name} {sql_type}{constraints}"))
+                else:
+                    connection.execute(text(f"ALTER TABLE alerts ADD COLUMN {column_name} {sql_type}{constraints}"))
 
 
 def get_db():

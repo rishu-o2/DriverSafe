@@ -12,6 +12,25 @@ application starts. Set `DATABASE_URL` in `backend/.env` to a PostgreSQL URL
 for deployments. For local development, it may instead point to a SQLite file,
 for example `sqlite:///./driversafe.db`. Vercel deployments reject SQLite
 because its filesystem is not persistent.
+
+Live detection calibrates each authenticated user's first face session for
+`CALIBRATION_SECONDS` of accepted face-frame time (default `30`, allowed
+`30`–`60`). Accepted calibration
+frames must contain finite 20-value features in range, open eyes, and a mostly
+closed mouth; outliers are excluded. At least 100 accepted frames are required
+in addition to the configured duration. Calibration stores per-user means and
+standard deviations in the in-memory live session and adjusts only the eye and
+mouth rule thresholds within fixed safe bounds. The trained models are not
+changed. Calibration and temporal tracker state survive WebSocket reconnects.
+An open episode remains open for a 30-second reconnect grace period, then is
+closed and saved if no reconnect occurs. Other session state expires after 30
+minutes of inactivity and is lost on a backend restart.
+
+`ALERT_COOLDOWN_SECONDS` defaults to `30` and must be non-negative. The backend
+stores one alert-history row per contiguous drowsy episode with its start time,
+end time, and peak confidence as severity. Episodes inside the cooldown are
+still stored, but their `alert_event` flag is false so clients can suppress a
+repeated notification. A non-drowsy or missing-face frame closes an episode.
 Set `FRONTEND_ORIGINS` to a comma-separated list of exact browser origins that
 should be allowed to make credentialed API requests; it defaults to
 `FRONTEND_URL` and then `https://driversafe.vercel.app`.
@@ -55,5 +74,6 @@ different instances. Ensure Fluid Compute is enabled for older Vercel projects.
 
 Install backend dependencies with `pip install -r backend/requirements.txt`,
 then start the API from the `backend` directory with
-`uvicorn main:app --reload --host 0.0.0.0 --port 8000`. No separate migration
-command is needed for the initial schema; startup creates missing tables.
+`uvicorn main:app --reload --host 0.0.0.0 --port 8000`. Startup creates missing
+tables and applies the additive alert episode columns to an existing `alerts`
+table; no data is deleted. The migration runs automatically on app startup.

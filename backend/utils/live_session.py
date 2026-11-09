@@ -1,13 +1,17 @@
 """In-process live state keyed by authenticated user, for a single backend instance."""
 
 from collections import OrderedDict, deque
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Lock
 from time import monotonic, time
 
+import numpy as np
+
 
 SESSION_TTL_SECONDS = 30 * 60
+DISCONNECT_GRACE_SECONDS = 30
 MAX_USER_SESSIONS = 1000
+MIN_CALIBRATION_FRAMES = 100
 
 
 class LiveSession:
@@ -26,6 +30,164 @@ class LiveSession:
         self.alert_frames = 0
         self.session_started_at = datetime.now()
         self.session_started_clock = monotonic()
+        self.calibration_last_frame_clock = None
+        self.calibration_valid_seconds = 0.0
+        self.calibration_samples = deque(maxlen=3000)
+        self.calibration_baseline = None
+        self.detector_tracker = None
+        self.active_episode = None
+        self.last_alert_event_clock = None
+        self.disconnected_at_clock = None
+
+    def _calibration_state_locked(self, duration_seconds):
+        if self.calibration_baseline is not None:
+            return {"phase": "active", "progress": 1.0}
+
+        if (
+            self.calibration_valid_seconds >= duration_seconds
+            and len(self.calibration_samples) >= MIN_CALIBRATION_FRAMES
+        ):
+            matrix = np.asarray(self.calibration_samples, dtype=np.float64)
+            self.calibration_baseline = {
+                "mean": matrix.mean(axis=0).tolist(),
+                "std": matrix.std(axis=0).tolist(),
+                "sample_count": len(matrix),
+            }
+            return {"phase": "active", "progress": 1.0}
+
+        time_progress = self.calibration_valid_seconds / duration_seconds if duration_seconds > 0 else 0.0
+        sample_progress = len(self.calibration_samples) / MIN_CALIBRATION_FRAMES
+        progress = min(time_progress, sample_progress, 0.99)
+        return {"phase": "calibrating", "progress": round(progress, 3)}
+
+    def _is_extreme_calibration_frame_locked(self, values):
+        if len(values) != 20 or not np.isfinite(values).all():
+            return True
+        if np.any(values < 0.0) or np.any(values > 1.0):
+            return True
+        # Do not learn a resting baseline from closed eyes or a wide-open mouth.
+        if min(float(values[14]), float(values[15])) < 0.35:
+            return True
+        if max(float(values[3]), float(values[13])) > 0.85:
+            return True
+
+        if len(self.calibration_samples) >= 10:
+            matrix = np.asarray(self.calibration_samples, dtype=np.float64)
+            for index in (14, 15, 3, 6, 7, 8, 19):
+                mean = float(matrix[:, index].mean())
+                std = float(matrix[:, index].std())
+                if abs(float(values[index]) - mean) > max(4.0 * std, 0.2):
+                    return True
+        return False
+
+    def observe_calibration_frame(self, features, duration_seconds):
+        values = np.asarray(features, dtype=np.float64)
+        with self._lock:
+            if self.calibration_baseline is None and not self._is_extreme_calibration_frame_locked(values):
+                now = monotonic()
+                if self.calibration_last_frame_clock is not None:
+                    frame_gap = now - self.calibration_last_frame_clock
+                    if 0.0 < frame_gap <= 5.0:
+                        self.calibration_valid_seconds += min(frame_gap, 1.0)
+                self.calibration_last_frame_clock = now
+                self.calibration_samples.append(values.tolist())
+            elif self.calibration_baseline is None:
+                self.calibration_last_frame_clock = None
+            return self._calibration_state_locked(duration_seconds)
+
+    def note_calibration_gap(self):
+        with self._lock:
+            if self.calibration_baseline is None:
+                self.calibration_last_frame_clock = None
+
+    def get_calibration_state(self, duration_seconds):
+        with self._lock:
+            return self._calibration_state_locked(duration_seconds)
+
+    def get_calibration_baseline(self):
+        with self._lock:
+            return self.calibration_baseline
+
+    def get_or_create_detector_tracker(self, factory):
+        """Keep temporal detector state across reconnects for this user session."""
+        with self._lock:
+            if self.detector_tracker is None:
+                self.detector_tracker = factory()
+            return self.detector_tracker
+
+    def mark_connected(self):
+        with self._lock:
+            self.disconnected_at_clock = None
+
+    def mark_disconnected(self):
+        with self._lock:
+            self.disconnected_at_clock = monotonic()
+
+    def close_episode_after_disconnect(self, grace_seconds):
+        with self._lock:
+            disconnected_at = self.disconnected_at_clock
+            if disconnected_at is None or monotonic() - disconnected_at < grace_seconds:
+                return None
+            return self._close_open_episode_locked()
+
+    def close_open_episode(self):
+        with self._lock:
+            return self._close_open_episode_locked()
+
+    def _close_open_episode_locked(self):
+        if self.active_episode is None:
+            return None
+        self.active_episode["end_timestamp"] = datetime.now(timezone.utc)
+        episode = {"action": "ended", **self.active_episode}
+        self.active_episode = None
+        return episode
+
+    def update_episode(self, is_drowsy, severity, cooldown_seconds, frame=None, scores=None):
+        now_clock = monotonic()
+        now = datetime.now(timezone.utc)
+        with self._lock:
+            if is_drowsy:
+                if self.active_episode is not None:
+                    self.active_episode["end_timestamp"] = now
+                    self.active_episode["peak_severity"] = max(
+                        self.active_episode["peak_severity"], float(severity or 0.0)
+                    )
+                    return None
+
+                alert_event = (
+                    self.last_alert_event_clock is None
+                    or now_clock - self.last_alert_event_clock >= cooldown_seconds
+                )
+                if alert_event:
+                    self.last_alert_event_clock = now_clock
+                episode_scores = scores or {}
+                self.active_episode = {
+                    "id": None,
+                    "timestamp": now,
+                    "end_timestamp": now,
+                    "peak_severity": float(severity or 0.0),
+                    "alert_event": alert_event,
+                    "frame": frame,
+                    "scores": {
+                        key: episode_scores.get(key)
+                        for key in (
+                            "ae_error", "if_score", "lof_score", "confidence", "models",
+                            "votes", "model_alerts", "live_signals",
+                        )
+                    },
+                }
+                event = {"action": "started", **self.active_episode}
+                event["end_timestamp"] = None
+                return event
+
+            if self.active_episode is None:
+                return None
+            return self._close_open_episode_locked()
+
+    def set_active_episode_id(self, episode_id):
+        with self._lock:
+            if self.active_episode is not None:
+                self.active_episode["id"] = episode_id
 
     def record_frame(self, features=None, is_alert=False):
         with self._lock:
@@ -116,15 +278,25 @@ class LiveSession:
 
 _sessions: OrderedDict[int, tuple[LiveSession, float]] = OrderedDict()
 _sessions_lock = Lock()
+_session_expiry_handler = None
 
 
-def _remove_expired_sessions(now: float) -> None:
+def set_session_expiry_handler(handler) -> None:
+    global _session_expiry_handler
+    _session_expiry_handler = handler
+
+
+def _remove_expired_sessions(now: float):
     expired_user_ids = [
         user_id for user_id, (_, last_seen) in _sessions.items()
         if now - last_seen >= SESSION_TTL_SECONDS
     ]
+    expired = []
     for user_id in expired_user_ids:
-        _sessions.pop(user_id, None)
+        entry = _sessions.pop(user_id, None)
+        if entry is not None:
+            expired.append((user_id, entry[0]))
+    return expired
 
 
 def get_session(user_id: int | None = None, session_id: str | None = None) -> LiveSession:
@@ -134,8 +306,9 @@ def get_session(user_id: int | None = None, session_id: str | None = None) -> Li
         return LiveSession()
 
     now = monotonic()
+    expired = []
     with _sessions_lock:
-        _remove_expired_sessions(now)
+        expired = _remove_expired_sessions(now)
         entry = _sessions.get(int(user_id))
         if entry is None:
             entry = (LiveSession(), now)
@@ -144,8 +317,13 @@ def get_session(user_id: int | None = None, session_id: str | None = None) -> Li
         _sessions[int(user_id)] = entry
         _sessions.move_to_end(int(user_id))
         while len(_sessions) > MAX_USER_SESSIONS:
-            _sessions.popitem(last=False)
-        return entry[0]
+            expired_user_id, (expired_session, _) = _sessions.popitem(last=False)
+            expired.append((expired_user_id, expired_session))
+
+    if _session_expiry_handler is not None:
+        for expired_user_id, expired_session in expired:
+            _session_expiry_handler(expired_user_id, expired_session)
+    return entry[0]
 
 
 def reset_session(user_id: int | None = None, session_id: str | None = None) -> None:

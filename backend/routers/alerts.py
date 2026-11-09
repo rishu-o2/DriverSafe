@@ -17,6 +17,8 @@ def _alert_dict(alert: Alert) -> Dict[str, Any]:
     return {
         "id": alert.id,
         "timestamp": alert.timestamp.isoformat(),
+        "end_timestamp": alert.end_timestamp.isoformat() if alert.end_timestamp else None,
+        "peak_severity": alert.peak_severity,
         "frame": alert.frame,
         "state": alert.state,
         "ae_error": alert.ae_error,
@@ -57,11 +59,13 @@ def export_alerts_csv(db: Session = Depends(get_db), user: User = Depends(get_cu
     alerts = db.query(Alert).filter(Alert.user_id == user.id).order_by(Alert.timestamp.desc(), Alert.id.desc()).all()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "timestamp", "frame", "state", "ae_error", "if_score", "lof", "confidence", "models"])
+    writer.writerow(["id", "timestamp", "end_timestamp", "peak_severity", "frame", "state", "ae_error", "if_score", "lof", "confidence", "models"])
     for alert in alerts:
         writer.writerow([
             alert.id,
             alert.timestamp.isoformat(),
+            alert.end_timestamp.isoformat() if alert.end_timestamp else "",
+            alert.peak_severity,
             alert.frame,
             alert.state,
             alert.ae_error,
