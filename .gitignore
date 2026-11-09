@@ -75,3 +75,7 @@ venv/
 ENV/
 env/
 
+
+backend/driversafe.db
+
+*.db
