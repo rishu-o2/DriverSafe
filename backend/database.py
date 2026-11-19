@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, JSON, String, create_engine, inspect, text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, JSON, String, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 load_dotenv()
@@ -65,6 +65,49 @@ class Alert(Base):
     votes = Column(Integer, nullable=False, default=0)
     model_alerts = Column(JSON, nullable=False, default=dict)
     live_signals = Column(JSON, nullable=False, default=dict)
+
+
+class RecordingSubject(Base):
+    __tablename__ = "recording_subjects"
+
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    subject_id = Column(String(36), nullable=False, unique=True, index=True)
+
+
+class RecordingSession(Base):
+    __tablename__ = "recording_sessions"
+    __table_args__ = (
+        Index(
+            "uq_recording_sessions_active_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("active = true"),
+            sqlite_where=text("active = 1"),
+        ),
+    )
+
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    subject_id = Column(String(36), nullable=False, index=True)
+    glasses = Column(String(3), nullable=False)
+    lighting = Column(String(20), nullable=False)
+    camera_angle = Column(String(20), nullable=False)
+    started_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    stopped_at = Column(DateTime(timezone=True), nullable=True)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    step_index = Column(Integer, nullable=False, default=0)
+    current_label = Column(String(32), nullable=False, default="calibration")
+    step_started_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+
+class RecordingFrame(Base):
+    __tablename__ = "recording_frames"
+
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String(36), ForeignKey("recording_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
+    label = Column(String(32), nullable=False)
+    features = Column(JSON, nullable=False)
 
 
 def migrate_alert_episode_columns():

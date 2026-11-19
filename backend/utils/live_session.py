@@ -80,11 +80,11 @@ class LiveSession:
                     return True
         return False
 
-    def observe_calibration_frame(self, features, duration_seconds):
+    def observe_calibration_frame(self, features, duration_seconds, timestamp=None):
         values = np.asarray(features, dtype=np.float64)
         with self._lock:
             if self.calibration_baseline is None and not self._is_extreme_calibration_frame_locked(values):
-                now = monotonic()
+                now = monotonic() if timestamp is None else float(timestamp)
                 if self.calibration_last_frame_clock is not None:
                     frame_gap = now - self.calibration_last_frame_clock
                     if 0.0 < frame_gap <= 5.0:
@@ -142,9 +142,9 @@ class LiveSession:
         self.active_episode = None
         return episode
 
-    def update_episode(self, is_drowsy, severity, cooldown_seconds, frame=None, scores=None):
-        now_clock = monotonic()
-        now = datetime.now(timezone.utc)
+    def update_episode(self, is_drowsy, severity, cooldown_seconds, frame=None, scores=None, timestamp=None):
+        now_clock = monotonic() if timestamp is None else timestamp.timestamp()
+        now = datetime.now(timezone.utc) if timestamp is None else timestamp.astimezone(timezone.utc)
         with self._lock:
             if is_drowsy:
                 if self.active_episode is not None:
@@ -215,6 +215,8 @@ class LiveSession:
                 "votes": int(result.get("votes", 0) or 0),
                 "live_signals": result.get("live_signals", {}),
                 "timestamp": time(),
+                "source": result.get("source", "camera"),
+                "synthetic_ground_truth": result.get("synthetic_ground_truth"),
             })
             self.total_predictions += 1
 
@@ -225,8 +227,9 @@ class LiveSession:
         if not results:
             return None
         face_results = [row for row in results if row.get("face_detected", True)]
+        synthetic_results = [row for row in face_results if row.get("source") == "synthetic" and row.get("synthetic_ground_truth") is not None]
         average = lambda key: round(sum(row[key] for row in face_results) / len(face_results), 3) if face_results else None
-        return {
+        metrics = {
             "f1_score": None, "precision": None, "recall": None, "accuracy": None,
             "roc_auc": None, "confusion": None,
             "avg_ae_error": average("ae_error"), "avg_if_score": average("if_score"),
@@ -239,13 +242,38 @@ class LiveSession:
             "model_consensus_rate": round(sum(bool((row.get("live_signals") or {}).get("model_consensus")) for row in results) / len(results), 3),
             "session_frames": total_frames,
         }
+        if synthetic_results:
+            actual = [bool(row["synthetic_ground_truth"]) for row in synthetic_results]
+            predicted = [bool(row["is_drowsy"]) for row in synthetic_results]
+            tp = sum(a and p for a, p in zip(actual, predicted))
+            fp = sum((not a) and p for a, p in zip(actual, predicted))
+            fn = sum(a and (not p) for a, p in zip(actual, predicted))
+            tn = sum((not a) and (not p) for a, p in zip(actual, predicted))
+            precision = tp / (tp + fp) if tp + fp else 0.0
+            recall = tp / (tp + fn) if tp + fn else 0.0
+            metrics.update({
+                "f1_score": round(2 * precision * recall / (precision + recall), 3) if precision + recall else 0.0,
+                "precision": round(precision, 3),
+                "recall": round(recall, 3),
+                "accuracy": round((tp + tn) / len(actual), 3),
+                "confusion": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
+                "source": "synthetic",
+                "metric_kind": "synthetic_labeled_demo",
+                "synthetic_frames": len(synthetic_results),
+            })
+        return metrics
 
     def compute_live_roc(self):
         with self._lock:
             results = list(self.recent_results)
         if len(results) < 20:
             return None
-        labels = [int(result["is_drowsy"]) for result in results]
+        synthetic_results = [row for row in results if row.get("source") == "synthetic" and row.get("synthetic_ground_truth") is not None]
+        if synthetic_results:
+            results = synthetic_results
+            labels = [int(result["synthetic_ground_truth"]) for result in results]
+        else:
+            labels = [int(result["is_drowsy"]) for result in results]
         if not any(labels) or all(labels):
             return None
         try:

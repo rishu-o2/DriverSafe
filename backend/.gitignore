@@ -1,3 +1,7 @@
 .vercel
 .env*
 driversafe.db
+data/recordings/
+evaluation/results/*
+!evaluation/results/.gitkeep
+!evaluation/results/sample-schema.json

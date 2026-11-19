@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlsplit
 
 
 def _is_production() -> bool:
@@ -20,6 +21,23 @@ def _env_bool(name: str, default: bool) -> bool:
 def get_allowed_origins() -> tuple[str, ...]:
     configured = os.getenv("FRONTEND_ORIGINS", os.getenv("FRONTEND_URL", "https://driversafe.vercel.app"))
     return tuple(origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip())
+
+
+def is_allowed_origin(origin: str, host: str, forwarded_proto: str | None = None) -> bool:
+    normalized = origin.rstrip("/")
+    if normalized in get_allowed_origins():
+        return True
+    parsed = urlsplit(normalized)
+    expected_scheme = (forwarded_proto or "").split(",", 1)[0].strip().lower()
+    if not expected_scheme:
+        expected_scheme = "https" if _is_production() else "http"
+    return (
+        parsed.scheme.lower() == expected_scheme
+        and parsed.netloc.lower() == host.lower()
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
 
 
 IS_PRODUCTION = _is_production()

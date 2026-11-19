@@ -31,6 +31,50 @@ stores one alert-history row per contiguous drowsy episode with its start time,
 end time, and peak confidence as severity. Episodes inside the cooldown are
 still stored, but their `alert_event` flag is false so clients can suppress a
 repeated notification. A non-drowsy or missing-face frame closes an episode.
+
+## Labeled feature recordings
+
+The authenticated recording protocol stores derived 20-number feature vectors,
+timestamps, labels, a random pseudonymous subject ID, and the glasses, lighting,
+and camera-angle conditions in the configured database. It never stores webcam
+video or images. The participant must accept the consent notice before recording.
+Stay seated and parked; do not induce fatigue or perform the prompted actions
+while driving. Each account can list, export, and delete only its own recording
+sessions. The current protocol is calibration (defaults to `CALIBRATION_SECONDS`,
+normally 30 seconds), normal (60 seconds),
+drowsy eyes (30 seconds), drowsy yawn (30 seconds), and drowsy nod (30 seconds).
+The backend returns the active instruction and remaining time.
+
+The step durations are configurable with `RECORDING_STEP_CALIBRATION_SECONDS`,
+`RECORDING_STEP_NORMAL_SECONDS`, `RECORDING_STEP_DROWSY_EYES_SECONDS`,
+`RECORDING_STEP_DROWSY_YAWN_SECONDS`, and `RECORDING_STEP_DROWSY_NOD_SECONDS`.
+Each must be an integer from 1 to 3600; their sum cannot exceed 1800 seconds.
+Defaults are `CALIBRATION_SECONDS`, 60, 30, 30, and 30 seconds. The recording
+calibration duration cannot be shorter than `CALIBRATION_SECONDS`. New tables are created at backend
+startup. Recording rows remain in the database until the account deletes them.
+
+## Offline evaluation
+
+From `backend`, install the runtime dependencies and run:
+
+```text
+python -m evaluation.evaluate
+```
+
+The script reads recordings and existing model artifacts without retraining or
+modifying models, and writes JSON, CSV, Markdown, and SVG results under
+`backend/evaluation/results/`. Generated results and recordings are ignored by
+Git. If the database contains no completed feature rows, the script exits with
+a clear message and creates no result files. Run the metrics unit test from
+`backend` with:
+
+```text
+python -m unittest evaluation.test_metrics
+```
+
+The evaluation uses the database selected by `DATABASE_URL` and does not write
+to `.env` files.
+
 Set `FRONTEND_ORIGINS` to a comma-separated list of exact browser origins that
 should be allowed to make credentialed API requests; it defaults to
 `FRONTEND_URL` and then `https://driversafe.vercel.app`.

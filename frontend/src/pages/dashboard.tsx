@@ -5,8 +5,6 @@ import {
   Bell,
   Camera,
   ChevronRight,
-  Download,
-  LogOut,
   Menu,
   ScatterChart as ScatterChartIcon,
   Settings,
@@ -27,8 +25,8 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Link, useLocation } from 'wouter';
-import { logout, resetLiveSession } from '../lib/api';
+import { Link } from 'wouter';
+import { resetLiveSession } from '../lib/api';
 import { useDetection } from '../hooks/useApi';
 import { createFaceLandmarker, extractFaceFeatures } from '../lib/face-landmarks';
 
@@ -81,38 +79,29 @@ function chartColors() {
 }
 
 export default function Dashboard() {
-  const [, setLocation] = useLocation();
   const [activeView, setActiveView] = useState<DashboardView>('live');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const detection = useDetection();
   const [sessionSeconds, setSessionSeconds] = useState(0);
 
   useEffect(() => {
-    if (!detection.isConnected) return;
+    if (!detection.isConnected && detection.streamSource !== 'synthetic') return;
 
     const connectedAt = Date.now();
     const updateElapsed = () => setSessionSeconds(Math.floor((Date.now() - connectedAt) / 1000));
     updateElapsed();
     const timer = window.setInterval(updateElapsed, 1000);
     return () => window.clearInterval(timer);
-  }, [detection.isConnected]);
+  }, [detection.isConnected, detection.streamSource]);
 
   const sessionDuration = formatSessionDuration(sessionSeconds);
-  const sessionStatus = !detection.isConnected
-    ? 'Detection disconnected'
+  const sessionStatus = detection.streamSource === 'synthetic'
+    ? 'Synthetic demo active'
+    : !detection.isConnected
+      ? 'Detection disconnected'
     : detection.phase === 'calibrating'
       ? 'Calibrating driver baseline'
       : 'Live detection connected';
-
-  const signOut = async () => {
-    try {
-      await logout();
-    } catch {
-      // Leave routing to the auth endpoint on the next protected page visit.
-    } finally {
-      setLocation('/login');
-    }
-  };
 
   const selectView = (view: DashboardView) => {
     setActiveView(view);
@@ -136,8 +125,8 @@ export default function Dashboard() {
         <div className="dashboard-profile">
           <div className="dashboard-avatar" aria-hidden="true">RS</div>
           <div>
-            <strong>Rishu Sharma</strong>
-            <span>Unsupervised detection</span>
+            <strong>Public demo</strong>
+            <span>Temporary shared session</span>
           </div>
           <span className="dashboard-profile-dot" aria-label="Profile active" />
         </div>
@@ -179,10 +168,7 @@ export default function Dashboard() {
               <span>Session · {sessionDuration}</span>
             </div>
           </div>
-          <button type="button" className="dashboard-signout" onClick={signOut} data-testid="button-sign-out">
-            <LogOut aria-hidden="true" />
-            Sign out
-          </button>
+          <div className="dashboard-chart-note">Demo data is temporary and may be visible to other visitors on this instance.</div>
         </div>
       </aside>
 
@@ -204,10 +190,7 @@ export default function Dashboard() {
               <span className={`dashboard-live-dot${detection.isConnected ? '' : ' is-offline'}`} aria-hidden="true" />
               {sessionStatus}
             </div>
-            <div className="dashboard-avatar dashboard-top-avatar" aria-label="Rishu Sharma">RS</div>
-            <button type="button" className="dashboard-icon-button" aria-label="Sign out" onClick={signOut} data-testid="button-top-sign-out">
-              <LogOut aria-hidden="true" />
-            </button>
+            <span className="dashboard-session-code">PUBLIC DEMO</span>
           </div>
         </header>
 
@@ -261,7 +244,7 @@ function AnalyticsStatCard({ value, label, note, tone = 'cyan', testId }: { valu
 }
 
 function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
-  const { isConnected, currentState, aeError, aeThreshold, ifScore, lofScore, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame } = detection;
+  const { isConnected, currentState, aeError, aeThreshold, ifScore, lofScore, faceFrameCount, alertCount, liveSignals, faceDetected, sendFrame, sendSyntheticFrame, streamSource } = detection;
   const colors = chartColors();
   const liveTimeline = {
     timeline: detection.recentResults.map((result) => ({
@@ -361,21 +344,27 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
-      if (!landmarkerRef.current) return;
-      if (!cameraActive || !videoRef.current) {
-        setMediaPipeFaceDetected(false);
-        setDetectorStatus('MediaPipe: idle · camera unavailable');
-        return;
-      }
       if (!isConnected) {
         setMediaPipeFaceDetected(false);
-        setDetectorStatus('MediaPipe: idle · detection connection unavailable');
+        setDetectorStatus('Synthetic demo stream: using HTTP fallback');
+        void sendSyntheticFrame();
         return;
       }
-
+      if (!cameraActive || !videoRef.current) {
+        setMediaPipeFaceDetected(false);
+        setDetectorStatus('Synthetic demo stream: camera unavailable');
+        if (isConnected) sendFrame(JSON.stringify({ synthetic: true }));
+        return;
+      }
       const video = videoRef.current;
       if (video.videoWidth <= 0 || video.videoHeight <= 0) {
-        setDetectorStatus('MediaPipe: waiting for video frames');
+        setDetectorStatus('Synthetic demo stream: waiting for camera frames');
+        sendFrame(JSON.stringify({ synthetic: true }));
+        return;
+      }
+      if (!landmarkerRef.current) {
+        setDetectorStatus('Synthetic demo stream: face model unavailable');
+        sendFrame(JSON.stringify({ synthetic: true }));
         return;
       }
       try {
@@ -384,26 +373,31 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         const features = extractFaceFeatures(landmarks, video.videoWidth, video.videoHeight);
         setMediaPipeFaceDetected(Boolean(landmarks));
         if (!landmarks) {
-          setDetectorStatus('MediaPipe: no face landmarks · check lighting, framing, and camera focus');
+          setDetectorStatus('Synthetic demo stream: no face detected');
         } else if (!features) {
           setDetectorStatus(`MediaPipe: landmarks rejected · ${landmarks.length} points`);
         } else {
           setDetectorStatus(`MediaPipe: face detected · ${landmarks.length} landmarks`);
         }
-        if (!sendFrame(JSON.stringify({ face_detected: Boolean(features), features }))) {
+        if (features) {
+          if (!sendFrame(JSON.stringify({ face_detected: true, features }))) {
+            setDetectorStatus('MediaPipe: face found, but detection WebSocket is not open');
+          }
+        } else if (!sendFrame(JSON.stringify({ synthetic: true }))) {
           setDetectorStatus('MediaPipe: face found, but detection WebSocket is not open');
         }
       } catch (error) {
         console.error('Face landmark detection failed:', error);
         setMediaPipeFaceDetected(false);
         setDetectorStatus(`MediaPipe detection error: ${formatError(error)}`);
+        sendFrame(JSON.stringify({ synthetic: true }));
       }
     }, 250);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isConnected, cameraActive, sendFrame]);
+  }, [isConnected, cameraActive, sendFrame, sendSyntheticFrame]);
 
   // Removed early return to always show UI
 
@@ -426,7 +420,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         <AnalyticsStatCard value={detection.faceFramesSent.toLocaleString()} label="Face frames sent" note={faceFrameCount > 0 ? `${faceFrameCount} acknowledged by backend` : detection.faceFramesSent > 0 ? 'Waiting for backend acknowledgement' : 'Waiting for MediaPipe feature frames'} testId="card-live-frames" />
         <AnalyticsStatCard value={alertCount.toString()} label="Alert events" note="Cooldown-approved episodes this session" tone="alert" testId="card-live-alerts" />
         <AnalyticsStatCard value={detection.liveMetrics?.avg_ae_error?.toFixed(2) || 'N/A'} label="Live AE error" note={`${faceFrameCount} live face frames`} tone="amber" testId="card-live-f1" />
-        <AnalyticsStatCard value={!isConnected ? 'Offline' : detection.phase === 'calibrating' ? `${Math.round(detection.calibrationProgress * 100)}%` : detection.modelAvailable === false ? 'Rules only' : 'Active'} label={detection.phase === 'calibrating' ? 'Driver calibration' : 'Session status'} note={detection.phase === 'calibrating' ? 'Look naturally and stay alert; alerts are paused during calibration' : detection.modelAvailable === false ? 'Inference models unavailable; temporal eye/yawn cues remain active' : isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
+        <AnalyticsStatCard value={streamSource === 'synthetic' ? 'DEMO' : !isConnected ? 'Offline' : detection.phase === 'calibrating' ? `${Math.round(detection.calibrationProgress * 100)}%` : detection.modelAvailable === false ? 'Rules only' : 'Active'} label={detection.phase === 'calibrating' ? 'Driver calibration' : 'Session status'} note={streamSource === 'synthetic' ? `Generated feature stream · ${sessionDuration}` : detection.phase === 'calibrating' ? 'Look naturally and stay alert; alerts are paused during calibration' : detection.modelAvailable === false ? 'Inference models unavailable; temporal eye/yawn cues remain active' : isConnected ? `Connected · ${sessionDuration}` : 'Waiting for backend connection'} tone="amber" testId="card-live-duration" />
       </section>
       {isConnected && detection.phase === 'calibrating' && (
         <div className="dashboard-chart-note" role="status" aria-live="polite">
@@ -439,7 +433,7 @@ function LiveMonitor({ detection, sessionDuration }: { detection: ReturnType<typ
         <div className="dashboard-live-primary">
           <DashboardPanel title="Live Webcam Feed" eyebrow="Attention stream" action={<span className="dashboard-panel-code">CAM / 01</span>}>
             <div className="dashboard-webcam">
-              <span className={`dashboard-feed-badge dashboard-feed-badge--${currentState === 'DROWSY' ? 'alert' : 'active'}`}><span /> {!cameraActive ? (cameraError ? 'CAMERA ERROR' : 'CAMERA') : !isConnected ? 'OFFLINE' : detectorStatus.startsWith('MediaPipe: loading') ? 'LOADING' : detectorStatus.startsWith('MediaPipe initialization error') ? 'MODEL ERROR' : mediaPipeFaceDetected ? (faceDetected ? currentState : 'FACE DETECTED') : 'NO FACE'}</span>
+              <span className={`dashboard-feed-badge dashboard-feed-badge--${currentState === 'DROWSY' ? 'alert' : 'active'}`}><span /> {streamSource === 'synthetic' ? 'SYNTHETIC DEMO' : !cameraActive ? (cameraError ? 'CAMERA ERROR' : 'CAMERA') : !isConnected ? 'OFFLINE' : detectorStatus.startsWith('MediaPipe: loading') ? 'LOADING' : detectorStatus.startsWith('MediaPipe initialization error') ? 'MODEL ERROR' : mediaPipeFaceDetected ? (faceDetected ? currentState : 'FACE DETECTED') : 'NO FACE'}</span>
               <span className="dashboard-feed-badge dashboard-feed-badge--fps">{isConnected ? '4 FPS' : 'Offline'}</span>
               <div className="dashboard-webcam-placeholder">
                 <video 
@@ -656,11 +650,11 @@ function ClusteringPanel({ detection }: { detection: ReturnType<typeof useDetect
       <div className="dashboard-analytics-heading">
         <div>
           <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Live feature analysis</p>
-          <h2>Patterns in this camera session.</h2>
+          <h2>Patterns in the current feature stream.</h2>
         </div>
         <span className="dashboard-session-code">{livePoints.length} LIVE FRAMES</span>
       </div>
-      <p className="dashboard-chart-note">Clustering runs on recent webcam landmarks: average eye aspect ratio and mouth aspect ratio.</p>
+      <p className="dashboard-chart-note">Clustering runs on recent backend feature vectors. When camera input is unavailable, the backend supplies a clearly marked synthetic demo stream.</p>
       <div className="dashboard-chart-grid dashboard-chart-grid--two">
         <ScatterPanel title="Live K-means clusters" eyebrow="Current camera feature stream" badge={livePoints.length + ' frames'} series={liveClusterSeries} />
         <ScatterPanel title="Live density clusters" eyebrow="DBSCAN · normalized live features" badge={noiseCount + ' noise'} series={liveDensitySeries} />
@@ -717,11 +711,11 @@ function MetricsPanel({ detection }: { detection: ReturnType<typeof useDetection
           <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Live performance</p>
           <h2>Measurements from this camera session.</h2>
         </div>
-        <span className="dashboard-session-code">{detection.isConnected ? 'LIVE' : 'WAITING FOR STREAM'}</span>
+        <span className="dashboard-session-code">{detection.streamSource === 'synthetic' ? 'SYNTHETIC DEMO' : detection.isConnected ? 'LIVE' : 'WAITING FOR STREAM'}</span>
       </div>
-      <p className="dashboard-chart-note">Counts and model scores come directly from the live detection WebSocket. F1 and ROC are unavailable because this stream has no ground-truth labels.</p>
+      <p className="dashboard-chart-note">Counts and model scores come from the live detection WebSocket. F1 and ROC use generated labels only in the clearly marked synthetic demo; camera frames remain unlabeled.</p>
       <div className="dashboard-metric-panels">
-        <DashboardPanel title="Live Session Counts" eyebrow="Current browser stream">
+        <DashboardPanel title="Live Session Counts" eyebrow={detection.streamSource === 'synthetic' ? 'Backend synthetic stream' : 'Current feature stream'}>
           <div className="dashboard-metric-tile-grid">
             <MetricTile value={detection.sessionFrames.toString()} label="Frames received" note="Current live session" />
             <MetricTile value={detection.faceFrameCount.toString()} label="Face frames" note="Accepted by live detector" tone="cyan" />
@@ -763,24 +757,10 @@ function MetricsPanel({ detection }: { detection: ReturnType<typeof useDetection
     </div>
   );
 }
-function downloadAlertCsv(csvData: string) {
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(new Blob([csvData], { type: 'text/csv;charset=utf-8' }));
-  link.download = 'driversafe-alert-history.csv';
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
 function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<typeof useDetection>; sessionDuration: string }) {
   const colors = chartColors();
   const alertRows = detection.alerts;
   const yawnEvents = alertRows.filter((alert) => alert.models.some((model) => model.toLowerCase().includes('yawn'))).length;
-  const handleDownload = () => {
-    const headers = ['id', 'timestamp', 'end_timestamp', 'peak_severity', 'frame', 'state', 'ae_error', 'if_score', 'lof', 'confidence', 'models'];
-    const rows = alertRows.map((alert) => [alert.id, alert.timestamp, alert.end_timestamp ?? '', alert.peak_severity ?? alert.confidence, alert.frame ?? '', alert.state, alert.ae_error, alert.if_score, alert.lof, alert.confidence, alert.models.join('|')]);
-    const csv = [headers, ...rows].map((row) => row.map((cell) => '"' + String(cell).replaceAll('"', '""') + '"').join(',')).join('\n');
-    downloadAlertCsv(csv);
-  };
   const now = Date.now();
   const frequency = Array.from({ length: 9 }, (_, index) => {
     const start = now - (8 - index) * 10 * 60_000;
@@ -799,17 +779,14 @@ function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<ty
       <div className="dashboard-analytics-heading">
         <div>
           <p className="dashboard-kicker"><span className="dashboard-kicker-line" /> Driver alert history</p>
-          <h2>Episodes recorded for this account.</h2>
+          <h2>Episodes seen in this temporary session.</h2>
         </div>
         <span className="dashboard-session-code">{alertRows.length} LIVE EVENTS</span>
       </div>
       <p className="dashboard-chart-note">Each row is one drowsy episode, including episodes whose alert event was suppressed by the cooldown.</p>
-      <DashboardPanel title="Alert episodes" eyebrow="Current account history" action={(
+      <DashboardPanel title="Alert episodes" eyebrow="Current demo session" action={(
         <div className="dashboard-history-actions">
           <span className="dashboard-alert-total">{alertRows.length} alerts</span>
-          <button type="button" className="dashboard-export-button" onClick={handleDownload} data-testid="button-export-alerts">
-            <Download aria-hidden="true" /> Export CSV
-          </button>
         </div>
       )}>
         <div className="dashboard-alert-table-wrap">

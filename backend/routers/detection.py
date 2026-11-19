@@ -3,7 +3,7 @@ import os
 import json
 import math
 from collections import deque
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, WebSocket, WebSocketDisconnect
 import numpy as np
 from typing import Dict, Any
 from time import monotonic
@@ -14,10 +14,7 @@ from utils.live_session import (
     record_frame,
     set_session_expiry_handler,
 )
-from utils.alert_logger import AlertLogger
-from routers.auth import decode_access_token, COOKIE_NAME, get_current_user
-from utils.security import get_allowed_origins
-from database import SessionLocal, User
+from utils.security import is_allowed_origin
 
 router = APIRouter()
 
@@ -62,7 +59,7 @@ _autoencoder = None
 _ae_threshold = 1.5
 _MODELS_LOADED = False
 _runtime_models = None
-_alert_logger = AlertLogger()
+DEMO_USER_ID = 1
 
 # Baseline adaptation stays within validated operating ranges so a noisy
 # calibration cannot make the temporal rules ineffective.
@@ -82,8 +79,8 @@ class LiveStreamTracker:
         self.yawn_recorded = False
         self.yawn_times = deque()
 
-    def update(self, features, model_consensus, baseline=None):
-        now = monotonic()
+    def update(self, features, model_consensus, baseline=None, timestamp=None):
+        now = monotonic() if timestamp is None else float(timestamp)
         values = np.asarray(features, dtype=np.float32)
         left_eye_threshold = 0.48
         right_eye_threshold = 0.48
@@ -133,6 +130,7 @@ class LiveStreamTracker:
             self.yawn_times.popleft()
 
         is_drowsy = eye_closure or yawn or len(self.yawn_times) >= 2 or model_consensus
+        rule_alert = eye_closure or yawn or len(self.yawn_times) >= 2
         signals = {
             "eye_closure": eye_closure,
             "yawn": yawn,
@@ -140,6 +138,7 @@ class LiveStreamTracker:
         }
         return {
             "is_drowsy": bool(is_drowsy),
+            "rule_alert": bool(rule_alert),
             "live_signals": signals,
             "models": [name for name, active in signals.items() if active],
         }
@@ -151,8 +150,8 @@ class LiveStreamTracker:
         self.yawn_recorded = False
 
 
-def apply_live_tracking(result, features, tracker, baseline=None):
-    live = tracker.update(features, result["is_drowsy"], baseline)
+def apply_live_tracking(result, features, tracker, baseline=None, timestamp=None):
+    live = tracker.update(features, result["is_drowsy"], baseline, timestamp)
     result.update(live)
     signal_confidence = sum(live["live_signals"].values()) / 3
     result["confidence"] = round(max(float(result.get("confidence", 0)), signal_confidence), 3)
@@ -175,7 +174,7 @@ def load_models():
         _MODELS_LOADED = False
 
 
-def process_features(frame_number: int, frame_features: np.ndarray, tracker: LiveStreamTracker, baseline=None) -> Dict[str, Any]:
+def process_features(frame_number: int, frame_features: np.ndarray, tracker: LiveStreamTracker, baseline=None, timestamp=None) -> Dict[str, Any]:
     """Process exactly 20 features through the models."""
     if not _MODELS_LOADED:
         result = {
@@ -185,13 +184,14 @@ def process_features(frame_number: int, frame_features: np.ndarray, tracker: Liv
             "if_score": 0.0,
             "lof_score": 0.0,
             "is_drowsy": False,
+            "ensemble_alert": False,
             "votes": 0,
             "confidence": 0.0,
             "model_alerts": {"autoencoder": False, "isolation_forest": False, "lof": False},
             "face_detected": True,
             "model_available": False,
         }
-        return apply_live_tracking(result, frame_features, tracker, baseline)
+        return apply_live_tracking(result, frame_features, tracker, baseline, timestamp)
 
     frame_scaled = (frame_features.reshape(1, -1) - _runtime_models["scaler_mean"]) / _runtime_models["scaler_scale"]
     ae_error = float(_autoencoder.reconstruction_error(frame_scaled)[0])
@@ -209,6 +209,7 @@ def process_features(frame_number: int, frame_features: np.ndarray, tracker: Liv
         "if_score": round(float(if_score_raw), 3),
         "lof_score": round(float(lof_score_raw), 3),
         "is_drowsy": bool(is_drowsy),
+        "ensemble_alert": bool(is_drowsy),
         "votes": int(votes),
         "confidence": round(votes / 3, 3),
         "model_alerts": {
@@ -219,7 +220,7 @@ def process_features(frame_number: int, frame_features: np.ndarray, tracker: Liv
         "face_detected": True,
         "model_available": True,
     }
-    return apply_live_tracking(result, frame_features, tracker, baseline)
+    return apply_live_tracking(result, frame_features, tracker, baseline, timestamp)
 
 
 def _calibrating_result(frame_number, calibration, face_detected):
@@ -245,26 +246,7 @@ def _calibrating_result(frame_number, calibration, face_detected):
 def _complete_episode(session, user_id, event):
     if not event:
         return
-    episode_id = event.get("id")
-    if event["action"] == "started":
-        try:
-            episode_id = _alert_logger.start_episode(
-                user_id=user_id,
-                frame=event["frame"],
-                scores=event["scores"],
-                started_at=event["timestamp"],
-                peak_severity=event["peak_severity"],
-            )
-            session.set_active_episode_id(episode_id)
-        except Exception:
-            episode_id = None
-    elif event["action"] == "ended" and episode_id is not None:
-        try:
-            _alert_logger.finish_episode(episode_id, event["end_timestamp"], event["peak_severity"])
-        except Exception:
-            pass
-
-    event["id"] = episode_id
+    event["id"] = event.get("id", event.get("frame", 0))
     event.pop("scores", None)
     event.pop("frame", None)
     event["timestamp"] = event["timestamp"].isoformat()
@@ -340,23 +322,63 @@ def _record_live_result(result, user_id):
     return result
 
 
+def _synthetic_features(frame_number: int, user_id: int) -> np.ndarray:
+    """Deterministic, visibly synthetic alert/drowsy feature stream for demos."""
+    phase = frame_number % 80
+    is_drowsy = phase >= 60
+    if not is_drowsy:
+        center = np.asarray([.32,.31,.315,.12,.75,.74,.02,.01,.50,.35,.48,.65,.48,.10,.80,.79,.30,.70,.20,.50])
+    else:
+        center = np.asarray([.12,.11,.115,.60,.40,.39,.15,.25,.55,.35,.60,.65,.60,.50,.20,.19,.28,.72,.45,.65])
+    rng = np.random.default_rng((int(user_id) * 1_000_003 + int(frame_number)) % (2**32))
+    return np.clip(center + rng.normal(0.0, .018, size=20), 0.0, 1.0).astype(np.float32), is_drowsy
+
+
+@router.post("/demo/frame")
+def synthetic_demo_frame(payload: dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """HTTP fallback for deployments where the live WebSocket cannot connect."""
+    try:
+        frame_number = max(1, int(payload.get("frame", 1)))
+    except (TypeError, ValueError):
+        frame_number = 1
+    session = get_session(DEMO_USER_ID)
+    features, ground_truth = _synthetic_features(frame_number, DEMO_USER_ID)
+    tracker = session.get_or_create_detector_tracker(LiveStreamTracker)
+    result = process_features(frame_number, features, tracker, session.get_calibration_baseline())
+    result.update({
+        "source": "synthetic",
+        "synthetic_ground_truth": ground_truth,
+        "features": [float(value) for value in features],
+        "valid_face_frames": session.face_frames + 1,
+        "recording_protocol": None,
+    })
+    record_frame(features, result["is_drowsy"], DEMO_USER_ID)
+    episode_event = session.update_episode(
+        result["is_drowsy"], result.get("confidence", 0.0), ALERT_COOLDOWN_SECONDS,
+        frame=frame_number, scores=result,
+    )
+    result["alert_event"] = bool(
+        episode_event and episode_event["action"] == "started" and episode_event["alert_event"]
+    )
+    if episode_event:
+        result["episode_event"] = episode_event
+        _complete_episode(session, DEMO_USER_ID, episode_event)
+    return _record_live_result(result, DEMO_USER_ID)
+
+
 @router.websocket("/ws")
 async def detection_websocket(websocket: WebSocket):
-    origin = websocket.headers.get("origin", "").rstrip("/")
-    if not origin or origin not in get_allowed_origins():
+    origin = websocket.headers.get("origin", "")
+    if not origin or not is_allowed_origin(
+        origin,
+        websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", ""),
+        websocket.headers.get("x-forwarded-proto"),
+    ):
         await websocket.close(code=1008, reason="Origin not allowed")
         return
-    token = websocket.cookies.get(COOKIE_NAME)
-    payload = decode_access_token(token) if token else None
-    if not payload or not payload.get("sub"):
-        await websocket.close(code=1008, reason="Authentication required")
-        return
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.username == payload["sub"]).first()
-        user_id = user.id if user else None
-    if user_id is None:
-        await websocket.close(code=1008, reason="Authentication required")
-        return
+    # Public demo sessions are intentionally in-memory and shared by visitors
+    # handled by this backend instance. They are not private or persistent.
+    user_id = DEMO_USER_ID
     session = get_session(user_id)
     session.mark_connected()
     await websocket.accept()
@@ -370,16 +392,21 @@ async def detection_websocket(websocket: WebSocket):
             frame_count += 1
             try:
                 payload = json.loads(data)
+                synthetic = isinstance(payload, dict) and payload.get("synthetic") is True
                 raw_features = payload.get("features") if isinstance(payload, dict) else None
-                if isinstance(payload, dict) and payload.get("face_detected") and isinstance(raw_features, list) and len(raw_features) == 20:
-                    features = np.asarray(raw_features, dtype=np.float32)
+                if synthetic or (isinstance(payload, dict) and payload.get("face_detected") and isinstance(raw_features, list) and len(raw_features) == 20):
+                    if synthetic:
+                        features, synthetic_ground_truth = _synthetic_features(frame_count, user_id)
+                    else:
+                        features = np.asarray(raw_features, dtype=np.float32)
+                        synthetic_ground_truth = None
                     if not np.isfinite(features).all():
                         raise ValueError("Face feature vector contains non-finite values")
                     # Count valid face vectors as soon as the backend accepts them.
                     # Previously inference ran first, so a model error made a real
                     # received face frame look like a no-face frame to the client.
                     valid_face_frames += 1
-                    calibration = session.get_calibration_state(CALIBRATION_SECONDS)
+                    calibration = {"phase": "active", "progress": 1.0} if synthetic else session.get_calibration_state(CALIBRATION_SECONDS)
                     if calibration["phase"] == "calibrating":
                         calibration = session.observe_calibration_frame(features, CALIBRATION_SECONDS)
                         result = _calibrating_result(frame_count, calibration, True)
@@ -413,6 +440,9 @@ async def detection_websocket(websocket: WebSocket):
                         result["progress"] = 1.0
                     result["features"] = [float(value) for value in features]
                     result["valid_face_frames"] = valid_face_frames
+                    if synthetic:
+                        result["source"] = "synthetic"
+                        result["synthetic_ground_truth"] = synthetic_ground_truth
                     record_frame(features, result["is_drowsy"], user_id)
                 else:
                     tracker.reset_on_missing_face()
@@ -435,6 +465,9 @@ async def detection_websocket(websocket: WebSocket):
                         "progress": calibration["progress"],
                     }
                     record_frame(user_id=user_id)
+
+                result["recording_protocol"] = None
+
                 episode_event = session.update_episode(
                     result["is_drowsy"],
                     result.get("confidence", 0.0),
@@ -442,7 +475,8 @@ async def detection_websocket(websocket: WebSocket):
                     frame=frame_count,
                     scores=result,
                 )
-                _complete_episode(session, user_id, episode_event)
+                if not synthetic:
+                    _complete_episode(session, user_id, episode_event)
                 result["alert_event"] = bool(
                     episode_event
                     and episode_event["action"] == "started"

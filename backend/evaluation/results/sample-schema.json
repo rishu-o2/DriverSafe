@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DriverSafe evaluation result shape",
+  "description": "Schema only; contains no observed or example metrics.",
+  "type": "object",
+  "required": ["data", "overall", "per_subject", "per_condition", "threshold_sweep"],
+  "properties": {
+    "data": { "type": "object" },
+    "overall": { "type": "object" },
+    "per_subject": { "type": "object" },
+    "per_condition": { "type": "object" },
+    "threshold_sweep": { "type": "array" },
+    "synthetic_comparison": { "type": "object" }
+  }
+}

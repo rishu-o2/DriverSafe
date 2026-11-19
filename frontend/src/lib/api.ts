@@ -103,8 +103,8 @@ export interface AllMetrics {
 
 export interface LiveMetrics extends DetectionMetrics {
   confusion?: ConfusionMatrix | { tp: number; fp: number; fn: number; tn: number } | null;
-  source: "live";
-  metric_kind?: "live_stream_summary";
+  source: "live" | "synthetic";
+  metric_kind?: "live_stream_summary" | "synthetic_labeled_demo";
   frames_needed: number;
   live_frames: number;
   total_frames?: number;
@@ -153,6 +153,15 @@ export const getLiveTimeline = async (): Promise<LiveTimeline> => {
 
 export const resetLiveSession = async (): Promise<{ status: string; message: string }> => {
   const response = await apiFetch(`${BASE_URL}/api/metrics/reset`, { method: "POST", headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const postSyntheticDemoFrame = async (frame: number): Promise<DetectionFrameResponse> => {
+  const response = await apiFetch(`${BASE_URL}/api/detection/demo/frame`, {
+    method: "POST",
+    headers: getHeaders(),
+    body: JSON.stringify({ frame }),
+  });
   return handleResponse(response);
 };
 
@@ -343,7 +352,10 @@ export interface DetectionFrameResponse {
   processing_error?: string;
   phase?: "calibrating" | "active";
   progress?: number;
+  source?: "camera" | "synthetic";
+  synthetic_ground_truth?: boolean;
   alert_event?: boolean;
+  recording_protocol?: RecordingStatus | null;
   episode_event?: {
     action: "started" | "ended";
     id: number | null;
@@ -353,6 +365,75 @@ export interface DetectionFrameResponse {
     alert_event: boolean;
   };
 }
+
+export interface RecordingStatus {
+  active: boolean;
+  session_id: string | null;
+  subject_id: string | null;
+  label: string | null;
+  step: number | null;
+  step_count?: number;
+  instruction: string | null;
+  seconds_remaining: number;
+}
+
+export interface RecordingProtocol {
+  consent_notice: string;
+  labels: string[];
+  steps: Array<{ label: string; instruction: string; duration_seconds: number }>;
+  lighting_options: string[];
+  camera_angle_options: string[];
+}
+
+export const getRecordingProtocol = async (): Promise<RecordingProtocol> => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings/protocol`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const getCurrentRecording = async (): Promise<RecordingStatus> => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings/current`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const startRecording = async (input: {
+  consent_accepted: boolean;
+  glasses: boolean;
+  lighting: string;
+  camera_angle: string;
+}): Promise<RecordingStatus> => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings/start`, {
+    method: "POST", headers: getHeaders(), body: JSON.stringify(input),
+  });
+  return handleResponse(response);
+};
+
+export const stopRecording = async (): Promise<RecordingStatus> => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings/stop`, { method: "POST", headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const setCurrentRecordingLabel = async (label: string): Promise<RecordingStatus> => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings/current/label`, {
+    method: "POST", headers: getHeaders(), body: JSON.stringify({ label }),
+  });
+  return handleResponse(response);
+};
+
+export const listRecordings = async () => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings`, { headers: getHeaders() });
+  return handleResponse(response);
+};
+
+export const exportRecording = async (sessionId: string): Promise<Blob> => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings/${encodeURIComponent(sessionId)}/export`);
+  if (!response.ok) throw new Error("Unable to export recording");
+  return response.blob();
+};
+
+export const deleteRecording = async (sessionId: string): Promise<void> => {
+  const response = await apiFetch(`${BASE_URL}/api/recordings/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  if (!response.ok) throw new Error("Unable to delete recording");
+};
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
   const response = await apiFetch(`${BASE_URL}/api/detection/status`, { headers: getHeaders() });

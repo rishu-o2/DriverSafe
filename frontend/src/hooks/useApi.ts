@@ -5,24 +5,34 @@ import {
   LiveMetrics,
   Alert,
   getAlertHistory,
+  postSyntheticDemoFrame,
 } from "../lib/api";
 
 // --- useDetection ---
 
 const summarizeLiveResults = (results: DetectionFrameResponse[]): LiveMetrics => {
   const faceResults = results.filter((result) => result.face_detected);
+  const synthetic = faceResults.filter((result) => result.source === "synthetic" && typeof result.synthetic_ground_truth === "boolean");
   const average = (pick: (result: DetectionFrameResponse) => number) => faceResults.length
     ? faceResults.reduce((total, result) => total + pick(result), 0) / faceResults.length
     : null;
+  const actual = synthetic.map((result) => Boolean(result.synthetic_ground_truth));
+  const predicted = synthetic.map((result) => Boolean(result.is_drowsy));
+  const tp = actual.filter((value, index) => value && predicted[index]).length;
+  const fp = actual.filter((value, index) => !value && predicted[index]).length;
+  const fn = actual.filter((value, index) => value && !predicted[index]).length;
+  const tn = actual.filter((value, index) => !value && !predicted[index]).length;
+  const precision = tp + fp ? tp / (tp + fp) : 0;
+  const recall = tp + fn ? tp / (tp + fn) : 0;
   return {
-    f1_score: null,
+    f1_score: synthetic.length ? (precision + recall ? 2 * precision * recall / (precision + recall) : 0) : null,
     roc_auc: null,
-    precision: null,
-    recall: null,
-    accuracy: null,
-    confusion: null,
-    source: "live",
-    metric_kind: "live_stream_summary",
+    precision: synthetic.length ? precision : null,
+    recall: synthetic.length ? recall : null,
+    accuracy: synthetic.length ? (tp + tn) / synthetic.length : null,
+    confusion: synthetic.length ? { tp, fp, fn, tn } : null,
+    source: synthetic.length ? "synthetic" : "live",
+    metric_kind: synthetic.length ? "synthetic_labeled_demo" : "live_stream_summary",
     frames_needed: 0,
     live_frames: results.length,
     total_frames: results.length,
@@ -56,6 +66,7 @@ export const useDetection = () => {
   const [recentFeatures, setRecentFeatures] = useState<number[][]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
+  const [streamSource, setStreamSource] = useState<"camera" | "synthetic">("camera");
   const [phase, setPhase] = useState<"calibrating" | "active">("calibrating");
   const [calibrationProgress, setCalibrationProgress] = useState(0);
   const resultsRef = useRef<DetectionFrameResponse[]>([]);
@@ -64,6 +75,8 @@ export const useDetection = () => {
   const reconnectTimer = useRef<number | undefined>(undefined);
   const lastFrameSentAt = useRef(0);
   const lastFrameReceivedAt = useRef(0);
+  const syntheticSequence = useRef(0);
+  const syntheticRequestInFlight = useRef(false);
 
   const [ws] = useState(() => new DetectionWebSocket());
 
@@ -88,65 +101,80 @@ export const useDetection = () => {
     }
   }, []);
 
+  const handleFrame = useCallback((data: DetectionFrameResponse) => {
+    lastFrameReceivedAt.current = Date.now();
+    if (data.processing_error) {
+      console.error('Backend accepted a face frame but model inference failed:', data.processing_error);
+    }
+    setAeError(data.ae_error);
+    setAeThreshold(data.ae_threshold ?? 0.75);
+    setIfScore(data.if_score);
+    setLofScore(data.lof_score);
+    setFrameCount((previous) => previous + 1);
+    setFaceFrameCount((previous) => previous + (data.face_detected ? 1 : 0));
+    if (data.source === "synthetic" && data.face_detected) {
+      setFaceFramesSent((previous) => previous + 1);
+    }
+    setFaceDetected(data.face_detected ?? false);
+    setLiveSignals(data.live_signals ?? { eye_closure: false, yawn: false, model_consensus: false });
+    setPhase(data.phase ?? "active");
+    setCalibrationProgress(data.progress ?? 1);
+    setSessionFrames((previous) => previous + 1);
+    if (typeof data.model_available === "boolean") setModelAvailable(data.model_available);
+    setStreamSource(data.source === "synthetic" ? "synthetic" : "camera");
+
+    const nextResults = [...resultsRef.current, data].slice(-120);
+    resultsRef.current = nextResults;
+    setRecentResults(nextResults);
+    if (data.features?.length === 20 && data.face_detected) {
+      const nextFeatures = [...featuresRef.current, data.features].slice(-120);
+      featuresRef.current = nextFeatures;
+      setRecentFeatures(nextFeatures);
+    }
+    setLiveMetrics(summarizeLiveResults(nextResults));
+    setCurrentState(data.is_drowsy ? "DROWSY" : "NORMAL");
+    if (data.alert_event) setAlertCount((previous) => previous + 1);
+    const episode = data.episode_event;
+    if (episode?.action === "started") {
+      const modelAlerts = data.model_alerts ?? { autoencoder: false, isolation_forest: false, lof: false };
+      setAlerts((previous) => [{
+        id: episode.id ?? Date.now(),
+        timestamp: episode.timestamp,
+        end_timestamp: episode.end_timestamp,
+        peak_severity: episode.peak_severity,
+        state: "DROWSY",
+        ae_error: data.ae_error,
+        if_score: data.if_score,
+        lof: data.lof_score,
+        confidence: data.confidence ?? 0,
+        models: data.models ?? Object.entries(modelAlerts).filter(([, active]) => active).map(([name]) => name),
+        frame: data.frame,
+      }, ...previous].slice(0, 100));
+    } else if (episode?.action === "ended") {
+      setAlerts((previous) => previous.map((alert) => {
+        const matches = episode.id !== null ? alert.id === episode.id : alert.timestamp === episode.timestamp;
+        return matches ? { ...alert, end_timestamp: episode.end_timestamp, peak_severity: episode.peak_severity, confidence: episode.peak_severity } : alert;
+      }));
+    }
+  }, []);
+
+  const sendSyntheticFrame = useCallback(async (): Promise<void> => {
+    if (syntheticRequestInFlight.current) return;
+    syntheticRequestInFlight.current = true;
+    try {
+      syntheticSequence.current += 1;
+      const data = await postSyntheticDemoFrame(syntheticSequence.current);
+      handleFrame(data);
+    } catch (error) {
+      console.error("Synthetic demo frame request failed:", error);
+    } finally {
+      syntheticRequestInFlight.current = false;
+    }
+  }, [handleFrame]);
+
   const connectWs = useCallback(() => {
     ws.connect(
-      (data: DetectionFrameResponse) => {
-        lastFrameReceivedAt.current = Date.now();
-        if (data.processing_error) {
-          console.error('Backend accepted a face frame but model inference failed:', data.processing_error);
-        }
-        setAeError(data.ae_error);
-        setAeThreshold(data.ae_threshold ?? 0.75);
-        setIfScore(data.if_score);
-        setLofScore(data.lof_score);
-        setFrameCount((previous) => previous + 1);
-        setFaceFrameCount((previous) => previous + (data.face_detected ? 1 : 0));
-        setFaceDetected(data.face_detected ?? false);
-        setLiveSignals(data.live_signals ?? { eye_closure: false, yawn: false, model_consensus: false });
-        setPhase(data.phase ?? "active");
-        setCalibrationProgress(data.progress ?? 1);
-        setSessionFrames((previous) => previous + 1);
-        if (typeof data.model_available === "boolean") setModelAvailable(data.model_available);
-
-        const nextResults = [...resultsRef.current, data].slice(-120);
-        resultsRef.current = nextResults;
-        setRecentResults(nextResults);
-        if (data.features?.length === 20 && data.face_detected) {
-          const nextFeatures = [...featuresRef.current, data.features].slice(-120);
-          featuresRef.current = nextFeatures;
-          setRecentFeatures(nextFeatures);
-        }
-        setLiveMetrics(summarizeLiveResults(nextResults));
-        
-        if (data.is_drowsy) {
-          setCurrentState("DROWSY");
-        } else {
-          setCurrentState("NORMAL");
-        }
-        if (data.alert_event) setAlertCount((previous) => previous + 1);
-        const episode = data.episode_event;
-        if (episode?.action === "started") {
-          const modelAlerts = data.model_alerts ?? { autoencoder: false, isolation_forest: false, lof: false };
-          setAlerts((previous) => [{
-            id: episode.id ?? Date.now(),
-            timestamp: episode.timestamp,
-            end_timestamp: episode.end_timestamp,
-            peak_severity: episode.peak_severity,
-            state: "DROWSY",
-            ae_error: data.ae_error,
-            if_score: data.if_score,
-            lof: data.lof_score,
-            confidence: data.confidence ?? 0,
-            models: data.models ?? Object.entries(modelAlerts).filter(([, active]) => active).map(([name]) => name),
-            frame: data.frame,
-          }, ...previous].slice(0, 100));
-        } else if (episode?.action === "ended") {
-          setAlerts((previous) => previous.map((alert) => {
-            const matches = episode.id !== null ? alert.id === episode.id : alert.timestamp === episode.timestamp;
-            return matches ? { ...alert, end_timestamp: episode.end_timestamp, peak_severity: episode.peak_severity, confidence: episode.peak_severity } : alert;
-          }));
-        }
-      },
+      handleFrame,
       (err) => {
         console.error("Detection WS error", err);
       },
@@ -161,7 +189,7 @@ export const useDetection = () => {
         void refreshAlerts();
       }
     );
-  }, [refreshAlerts, ws]);
+  }, [handleFrame, refreshAlerts, ws]);
 
   useEffect(() => {
     mounted.current = true;
@@ -221,9 +249,11 @@ export const useDetection = () => {
     recentFeatures,
     alerts,
     modelAvailable,
+    streamSource,
     phase,
     calibrationProgress,
     reconnect: connectWs,
-    sendFrame
+    sendFrame,
+    sendSyntheticFrame,
   };
 };

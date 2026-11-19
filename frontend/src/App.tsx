@@ -1,16 +1,14 @@
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
-import { ArrowLeft, KeyRound, LockKeyhole, UserRound } from 'lucide-react';
+import { Activity } from 'lucide-react';
 import { Link, Route, Router as WouterRouter, Switch, useLocation } from 'wouter';
 import { ErrorBoundary } from '@/components/error-boundary';
-import { WelcomeSequence } from '@/components/welcome-sequence';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import Dashboard from '@/pages/dashboard';
 import NotFound from '@/pages/not-found';
-import { getCurrentUser, login, signup } from '@/lib/api';
 
 const queryClient = new QueryClient();
 gsap.registerPlugin(ScrollTrigger);
@@ -94,12 +92,9 @@ function Home() {
         <div className="curtain-copy">
           <h1 ref={headingRef} className="curtain-title" data-testid="heading-driversafe">DriverSafe</h1>
           <p className="curtain-subtitle">Unsupervised Drowsiness Detection System</p>
-          <div ref={actionsRef} className="hero-actions" data-testid="actions-auth">
-            <MagneticLink href="/login" icon={<KeyRound aria-hidden="true" />}>
-              Login
-            </MagneticLink>
-            <MagneticLink href="/signup" icon={<UserRound aria-hidden="true" />}>
-              Sign Up
+          <div ref={actionsRef} className="hero-actions" data-testid="actions-demo">
+            <MagneticLink href="/dashboard" icon={<Activity aria-hidden="true" />}>
+              Open public demo
             </MagneticLink>
           </div>
         </div>
@@ -146,140 +141,16 @@ function MagneticLink({
   );
 }
 
-function AuthPage({ mode }: { mode: 'login' | 'signup' }) {
-  const [, setLocation] = useLocation();
-  const [submitted, setSubmitted] = useState(false);
-  const [error, setError] = useState<string>('');
-  const isLogin = mode === 'login';
-
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setError('');
-    const form = new FormData(event.currentTarget);
-    const email = form.get('email') as string;
-    const password = form.get('password') as string;
-
-    try {
-      if (isLogin) {
-        await login(email, password);
-      } else {
-        const name = form.get('name') as string;
-        await signup(name, email, password);
-      }
-      setSubmitted(true);
-      setLocation('/welcome');
-    } catch (err: any) {
-      setError(err.message || "Authentication failed");
-    }
-  };
-
-  return (
-    <main className="auth-page" data-testid={`page-${mode}`}>
-      <section className="auth-card">
-        <Link href="/" className="auth-back" data-testid="link-back-home">
-          <ArrowLeft aria-hidden="true" />
-          Back to DriverSafe
-        </Link>
-        <h1>{isLogin ? 'Welcome back.' : 'Start watching.'}</h1>
-        <p>
-          {isLogin
-            ? 'Enter your details to continue to the DriverSafe safety layer.'
-            : 'Create an account for a clearer view of every drive.'}
-        </p>
-        {error && <div className="auth-error" style={{ color: '#ff6b6b', marginBottom: '1rem', fontSize: '0.875rem' }}>{error}</div>}
-        {submitted ? (
-          <div className="auth-success" data-testid="status-auth-success">
-            {isLogin
-              ? 'Access request received. Your safety layer is ready.'
-              : 'Your DriverSafe profile is ready to be configured.'}
-          </div>
-        ) : (
-          <form className="auth-form" onSubmit={handleSubmit}>
-            {!isLogin && (
-              <label className="auth-label">
-                Name
-                <input
-                  className="auth-input"
-                  name="name"
-                  type="text"
-                  autoComplete="name"
-                  placeholder="Your name"
-                  required
-                  data-testid="input-name"
-                />
-              </label>
-            )}
-            <label className="auth-label">
-              Email
-              <input
-                className="auth-input"
-                name="email"
-                type="email"
-                autoComplete="email"
-                placeholder="you@example.com"
-                required
-                data-testid="input-email"
-              />
-            </label>
-            <label className="auth-label">
-              Password
-              <input
-                className="auth-input"
-                name="password"
-                type="password"
-                autoComplete={isLogin ? 'current-password' : 'new-password'}
-                placeholder="••••••••"
-                minLength={8}
-                required
-                data-testid="input-password"
-              />
-            </label>
-            <button className="glass-pill auth-submit" type="submit" data-testid={`button-submit-${mode}`}>
-              {isLogin ? <LockKeyhole aria-hidden="true" /> : <UserRound aria-hidden="true" />}
-              <span>{isLogin ? 'Login' : 'Create account'}</span>
-            </button>
-          </form>
-        )}
-      </section>
-    </main>
-  );
-}
-
-function ProtectedRoute({ component: Component }: { component: any }) {
-  const [, setLocation] = useLocation();
-  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    getCurrentUser()
-      .then(() => { if (active) setAuthenticated(true); })
-      .catch(() => { if (active) { setAuthenticated(false); setLocation('/login'); } });
-    return () => { active = false; };
-  }, [setLocation]);
-
-  return authenticated ? <Component /> : null;
-}
-
 function Router() {
   return (
     <RoutedErrorBoundary>
       <Switch>
         <Route path="/" component={Home} />
-        <Route path="/login">
-          <AuthPage mode="login" />
-        </Route>
-        <Route path="/signup">
-          <AuthPage mode="signup" />
-        </Route>
-        <Route path="/welcome">
-          <ProtectedRoute component={WelcomeSequence} />
-        </Route>
-        <Route path="/dashboard/welcome">
-          <ProtectedRoute component={WelcomeSequence} />
-        </Route>
-        <Route path="/dashboard">
-          <ProtectedRoute component={Dashboard} />
-        </Route>
+        <Route path="/login" component={Dashboard} />
+        <Route path="/signup" component={Dashboard} />
+        <Route path="/welcome" component={Dashboard} />
+        <Route path="/dashboard/welcome" component={Dashboard} />
+        <Route path="/dashboard" component={Dashboard} />
         <Route component={NotFound} />
       </Switch>
     </RoutedErrorBoundary>
