@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
@@ -8,6 +8,8 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import Dashboard from '@/pages/dashboard';
+import AuthPage from '@/pages/auth';
+import { getCurrentUser } from '@/lib/api';
 import NotFound from '@/pages/not-found';
 
 const queryClient = new QueryClient();
@@ -93,8 +95,8 @@ function Home() {
           <h1 ref={headingRef} className="curtain-title" data-testid="heading-driversafe">DriverSafe</h1>
           <p className="curtain-subtitle">Unsupervised Drowsiness Detection System</p>
           <div ref={actionsRef} className="hero-actions" data-testid="actions-demo">
-            <MagneticLink href="/dashboard" icon={<Activity aria-hidden="true" />}>
-              Open public demo
+            <MagneticLink href="/login" icon={<Activity aria-hidden="true" />}>
+              Log in
             </MagneticLink>
           </div>
         </div>
@@ -146,15 +148,33 @@ function Router() {
     <RoutedErrorBoundary>
       <Switch>
         <Route path="/" component={Home} />
-        <Route path="/login" component={Dashboard} />
-        <Route path="/signup" component={Dashboard} />
-        <Route path="/welcome" component={Dashboard} />
-        <Route path="/dashboard/welcome" component={Dashboard} />
-        <Route path="/dashboard" component={Dashboard} />
+        <Route path="/login"><AuthPage mode="login" /></Route>
+        <Route path="/signup"><AuthPage mode="signup" /></Route>
+        <Route path="/welcome"><ProtectedDashboard /></Route>
+        <Route path="/dashboard/welcome"><ProtectedDashboard /></Route>
+        <Route path="/dashboard"><ProtectedDashboard /></Route>
         <Route component={NotFound} />
       </Switch>
     </RoutedErrorBoundary>
   );
+}
+
+function ProtectedDashboard() {
+  const [, setLocation] = useLocation();
+  const [allowed, setAllowed] = useState(false);
+  const [checked, setChecked] = useState(false);
+  useEffect(() => {
+    let active = true;
+    getCurrentUser().then(() => {
+      if (active) setAllowed(true);
+    }).catch(() => {
+      if (active) setLocation('/login');
+    }).finally(() => {
+      if (active) setChecked(true);
+    });
+    return () => { active = false; };
+  }, [setLocation]);
+  return checked && allowed ? <Dashboard /> : null;
 }
 
 function RoutedErrorBoundary({ children }: { children: ReactNode }) {

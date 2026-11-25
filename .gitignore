@@ -78,5 +78,9 @@ env/
 
 
 backend/driversafe.db
+backend/data/alerts/alerts.json
+backend/routers/data/alerts/alerts.json
 
 *.db
+
+.venv/

@@ -25,8 +25,8 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Link } from 'wouter';
-import { resetLiveSession } from '../lib/api';
+import { Link, useLocation } from 'wouter';
+import { getCurrentUser, logout, resetLiveSession, type AuthResponse } from '../lib/api';
 import { useDetection } from '../hooks/useApi';
 import { createFaceLandmarker, extractFaceFeatures } from '../lib/face-landmarks';
 
@@ -83,6 +83,19 @@ export default function Dashboard() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const detection = useDetection();
   const [sessionSeconds, setSessionSeconds] = useState(0);
+  const [account, setAccount] = useState<AuthResponse | null>(null);
+  const [, setLocation] = useLocation();
+
+  useEffect(() => { getCurrentUser().then(setAccount).catch(() => setLocation('/login')); }, [setLocation]);
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      setLocation('/login');
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Logout failed');
+    }
+  };
 
   useEffect(() => {
     if (!detection.isConnected && detection.streamSource !== 'synthetic') return;
@@ -123,10 +136,10 @@ export default function Dashboard() {
         </div>
 
         <div className="dashboard-profile">
-          <div className="dashboard-avatar" aria-hidden="true">RS</div>
+          <div className="dashboard-avatar" aria-hidden="true">{(account?.name || account?.username || 'U').slice(0, 2).toUpperCase()}</div>
           <div>
-            <strong>Public demo</strong>
-            <span>Temporary shared session</span>
+            <strong>{account?.name || account?.username || 'Account'}</strong>
+            <span>Private account session</span>
           </div>
           <span className="dashboard-profile-dot" aria-label="Profile active" />
         </div>
@@ -168,7 +181,7 @@ export default function Dashboard() {
               <span>Session · {sessionDuration}</span>
             </div>
           </div>
-          <div className="dashboard-chart-note">Demo data is temporary and may be visible to other visitors on this instance.</div>
+          <button type="button" className="dashboard-nav-item" onClick={handleLogout} data-testid="button-logout">Log out</button>
         </div>
       </aside>
 
@@ -177,6 +190,7 @@ export default function Dashboard() {
       )}
 
       <section className="dashboard-main">
+        {detection.apiError && <p role="alert" className="dashboard-chart-note">{detection.apiError}</p>}
         <header className="dashboard-topbar dashboard-analytics-topbar">
           <button type="button" className="dashboard-menu-button" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation" data-testid="button-open-navigation">
             <Menu aria-hidden="true" />
@@ -190,7 +204,7 @@ export default function Dashboard() {
               <span className={`dashboard-live-dot${detection.isConnected ? '' : ' is-offline'}`} aria-hidden="true" />
               {sessionStatus}
             </div>
-            <span className="dashboard-session-code">PUBLIC DEMO</span>
+            <span className="dashboard-session-code">{detection.streamSource === 'synthetic' ? 'SYNTHETIC SOURCE' : 'CAMERA SOURCE'}</span>
           </div>
         </header>
 

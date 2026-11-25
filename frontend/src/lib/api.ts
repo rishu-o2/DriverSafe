@@ -1,6 +1,6 @@
 // Vercel routes /api on the same deployment origin to the backend service.
 // Relative URLs also keep local frontend/backend proxy setups configurable.
-export const BASE_URL = import.meta.env.VITE_API_URL || "";
+export const BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
 // --- API Helpers ---
 
@@ -13,17 +13,55 @@ const getHeaders = (): HeadersInit => {
 const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) =>
   fetch(input, { credentials: "include", ...init });
 
-const handleResponse = async (response: Response) => {
-  if (!response.ok) {
-    let errorMessage = "An error occurred";
-    try {
-      const errorData = await response.json();
-      errorMessage = errorData.detail || errorMessage;
-    } catch {
-      // Ignored
+const formatValidationDetail = (detail: unknown): string | null => {
+  if (typeof detail === "string") return detail;
+  if (!Array.isArray(detail)) return null;
+  const messages = detail.map((issue: unknown) => {
+    if (!issue || typeof issue !== "object") return null;
+    const item = issue as { loc?: unknown[]; msg?: unknown; type?: string; ctx?: { min_length?: number } };
+    const field = String(item.loc?.at(-1) || "").toLowerCase();
+    const label = field === "password" ? "Password" : field === "username" ? "Username" : field ? field[0].toUpperCase() + field.slice(1) : "Input";
+    if (field === "password" && item.type?.includes("too_short")) return `Password must be at least ${item.ctx?.min_length || 8} characters.`;
+    if (field === "username" && item.type?.includes("too_short")) return `Username must be at least ${item.ctx?.min_length || 3} characters.`;
+    if (item.type === "missing") return `${label} is required.`;
+    if (typeof item.msg === "string") return `${label}: ${item.msg.replace(/^Value error,\s*/i, "")}.`;
+    return null;
+  }).filter((message): message is string => Boolean(message));
+  return messages.length ? [...new Set(messages)].join(" ") : null;
+};
+
+const apiError = async (response: Response) => {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("text/html")) {
+    return "The server did not respond correctly. Check the deployment routing.";
+  }
+  try {
+    const errorData = await response.clone().json();
+    if (response.status === 401) return "Invalid username or password";
+    if (response.status === 422) return formatValidationDetail(errorData.detail) || "Check the fields and try again.";
+    if (response.status === 403) {
+      return `${formatValidationDetail(errorData.detail) || "Request blocked"}. Check that the server is running and the site origin is configured.`;
     }
+    if (response.status >= 500) return "The server could not complete the request. Check that the server is running.";
+    return formatValidationDetail(errorData.detail) || (typeof errorData.message === "string" ? errorData.message : "Request could not be completed. Try again.");
+  } catch {
+    if (response.status === 401) return "Invalid username or password";
+    if (response.status === 403) return "Request blocked. Check that the server is running and the site origin is configured.";
+    if (response.status >= 500) return "The server could not complete the request. Check that the server is running.";
+    return "Request could not be completed. Try again.";
+  }
+};
+
+const handleResponse = async (response: Response) => {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("text/html")) {
+    throw new Error("The server did not respond correctly. Check the deployment routing.");
+  }
+  if (!response.ok) {
+    const errorMessage = await apiError(response);
     throw new Error(errorMessage);
   }
+  if (response.status === 204) return undefined;
   return response.json();
 };
 
@@ -43,11 +81,11 @@ export const login = async (username: string, password: string): Promise<AuthRes
   return handleResponse(response);
 };
 
-export const signup = async (name: string, email: string, password: string): Promise<AuthResponse> => {
+export const signup = async (username: string, password: string): Promise<AuthResponse> => {
   const response = await apiFetch(`${BASE_URL}/api/auth/signup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: email, password, name }), // sending email as username for backend
+    body: JSON.stringify({ username, password }),
   });
   return handleResponse(response);
 };
@@ -59,7 +97,7 @@ export const getCurrentUser = async (): Promise<AuthResponse> => {
 
 export const logout = async (): Promise<void> => {
   const response = await apiFetch(`${BASE_URL}/api/auth/logout`, { method: "POST" });
-  if (!response.ok) throw new Error("Unable to log out");
+  if (!response.ok) throw new Error(await apiError(response));
 };
 
 // --- Metrics Functions ---
@@ -227,7 +265,10 @@ export const getAlertStats = async (): Promise<AlertStats> => {
 
 export const exportAlerts = async (): Promise<string> => {
   const response = await apiFetch(`${BASE_URL}/api/alerts/export`, { headers: getHeaders() });
-  if (!response.ok) throw new Error("Failed to export alerts");
+  if ((response.headers.get("content-type") || "").includes("text/html")) {
+    throw new Error("The server did not respond correctly. Check the deployment routing.");
+  }
+  if (!response.ok) throw new Error(await apiError(response));
   return response.text();
 };
 
@@ -426,13 +467,16 @@ export const listRecordings = async () => {
 
 export const exportRecording = async (sessionId: string): Promise<Blob> => {
   const response = await apiFetch(`${BASE_URL}/api/recordings/${encodeURIComponent(sessionId)}/export`);
-  if (!response.ok) throw new Error("Unable to export recording");
+  if ((response.headers.get("content-type") || "").includes("text/html")) {
+    throw new Error("The server did not respond correctly. Check the deployment routing.");
+  }
+  if (!response.ok) throw new Error(await apiError(response));
   return response.blob();
 };
 
 export const deleteRecording = async (sessionId: string): Promise<void> => {
   const response = await apiFetch(`${BASE_URL}/api/recordings/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-  if (!response.ok) throw new Error("Unable to delete recording");
+  if (!response.ok) throw new Error(await apiError(response));
 };
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
@@ -456,8 +500,10 @@ export class DetectionWebSocket {
     }
     
     // The same-origin Vercel route sends this handshake to the backend service.
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${window.location.host}/api/detection/ws`;
+    const apiBase = BASE_URL || window.location.origin;
+    const defaultWsBase = apiBase.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
+    const wsBase = (import.meta.env.VITE_WS_URL || defaultWsBase).replace(/\/$/, "");
+    const wsUrl = `${wsBase}/api/detection/ws`;
     this.ws = new WebSocket(wsUrl);
     this.ws.onopen = () => onOpen?.();
 

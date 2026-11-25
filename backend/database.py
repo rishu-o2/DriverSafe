@@ -1,15 +1,18 @@
 import os
+import logging
 
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, JSON, String, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from threading import Lock
 
 load_dotenv()
 
 raw_database_url = os.getenv("DATABASE_URL")
 if not raw_database_url:
+    logging.getLogger("driversafe.config").error("Required configuration variable DATABASE_URL is missing")
     raise RuntimeError("DATABASE_URL must be set before starting the backend")
 
 def normalize_database_url(database_url: str) -> str:
@@ -23,6 +26,7 @@ def normalize_database_url(database_url: str) -> str:
 DATABASE_URL = normalize_database_url(raw_database_url)
 
 if (os.getenv("VERCEL") or os.getenv("VERCEL_ENV")) and DATABASE_URL.startswith("sqlite"):
+    logging.getLogger("driversafe.config").error("DATABASE_URL must be PostgreSQL on Vercel; SQLite is not supported")
     raise RuntimeError("DATABASE_URL must use PostgreSQL in the Vercel production environment")
 
 engine_options = {"pool_pre_ping": True}
@@ -31,6 +35,8 @@ if DATABASE_URL.startswith("sqlite"):
 
 engine = create_engine(DATABASE_URL, **engine_options)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+_schema_lock = Lock()
+_schema_ready = False
 
 
 class Base(DeclarativeBase):
@@ -125,13 +131,44 @@ def migrate_alert_episode_columns():
             if column_name not in existing_columns:
                 sql_type = column_type.compile(dialect=engine.dialect)
                 constraints = " NOT NULL DEFAULT 0" if column_name == "peak_severity" else ""
-                if engine.dialect.name == "postgresql":
-                    connection.execute(text(f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {column_name} {sql_type}{constraints}"))
-                else:
-                    connection.execute(text(f"ALTER TABLE alerts ADD COLUMN {column_name} {sql_type}{constraints}"))
+                try:
+                    if engine.dialect.name == "postgresql":
+                        connection.execute(text(f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {column_name} {sql_type}{constraints}"))
+                    else:
+                        connection.execute(text(f"ALTER TABLE alerts ADD COLUMN {column_name} {sql_type}{constraints}"))
+                except Exception as exc:
+                    if not _is_duplicate_schema_race(exc):
+                        raise
+
+
+def _is_duplicate_schema_race(exc):
+    original = getattr(exc, "orig", None)
+    code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    message = str(original or exc).lower()
+    return code in {"42P07", "42710"} or "already exists" in message or "duplicate column" in message
+
+
+def ensure_tables():
+    """Create and migrate the schema once in each serverless process."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception as exc:
+            if not _is_duplicate_schema_race(exc):
+                raise
+            # Another cold process created a table/index after our inspection.
+            Base.metadata.create_all(bind=engine)
+        migrate_alert_episode_columns()
+        _schema_ready = True
 
 
 def get_db():
+    ensure_tables()
     db = SessionLocal()
     try:
         yield db

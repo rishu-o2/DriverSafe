@@ -65,6 +65,7 @@ export const useDetection = () => {
   const [recentResults, setRecentResults] = useState<DetectionFrameResponse[]>([]);
   const [recentFeatures, setRecentFeatures] = useState<number[][]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [apiError, setApiError] = useState<string | null>(null);
   const [modelAvailable, setModelAvailable] = useState<boolean | null>(null);
   const [streamSource, setStreamSource] = useState<"camera" | "synthetic">("camera");
   const [phase, setPhase] = useState<"calibrating" | "active">("calibrating");
@@ -96,8 +97,9 @@ export const useDetection = () => {
         }
         return [...rows.values()].sort((left, right) => right.timestamp.localeCompare(left.timestamp)).slice(0, 100);
       });
-    } catch {
-      // Live monitoring can continue when alert history is temporarily unavailable.
+      setApiError(null);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "Alert history request failed");
     }
   }, []);
 
@@ -106,6 +108,7 @@ export const useDetection = () => {
     if (data.processing_error) {
       console.error('Backend accepted a face frame but model inference failed:', data.processing_error);
     }
+    setApiError(data.processing_error || null);
     setAeError(data.ae_error);
     setAeThreshold(data.ae_threshold ?? 0.75);
     setIfScore(data.if_score);
@@ -166,7 +169,7 @@ export const useDetection = () => {
       const data = await postSyntheticDemoFrame(syntheticSequence.current);
       handleFrame(data);
     } catch (error) {
-      console.error("Synthetic demo frame request failed:", error);
+      setApiError(error instanceof Error ? error.message : "Synthetic frame request failed");
     } finally {
       syntheticRequestInFlight.current = false;
     }
@@ -177,6 +180,7 @@ export const useDetection = () => {
       handleFrame,
       (err) => {
         console.error("Detection WS error", err);
+        setApiError("WebSocket connection failed");
       },
       () => {
         setIsConnected(false);
@@ -248,6 +252,7 @@ export const useDetection = () => {
     recentResults,
     recentFeatures,
     alerts,
+    apiError,
     modelAvailable,
     streamSource,
     phase,

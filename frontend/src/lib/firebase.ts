@@ -1,21 +1,27 @@
-import { getApp, getApps, initializeApp } from "firebase/app";
+import { getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import { getAnalytics, isSupported } from "firebase/analytics";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCcNiTWOh3iH4Qh_d9An4vF7XBOcDUd-6U",
-  authDomain: "driversafe-a0c87.firebaseapp.com",
-  projectId: "driversafe-a0c87",
-  storageBucket: "driversafe-a0c87.firebasestorage.app",
-  messagingSenderId: "1019151668412",
-  appId: "1:1019151668412:web:a45d341557c180fb26ecb9",
-  measurementId: "G-1K0MMKEV5Q",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
-export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+const configIsPresent = Boolean(
+  firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId &&
+  firebaseConfig.storageBucket && firebaseConfig.messagingSenderId && firebaseConfig.appId,
+);
+export const firebaseApp: FirebaseApp | null = !configIsPresent
+  ? null
+  : getApps()[0] || initializeApp(firebaseConfig);
+const analyticsEnabled = import.meta.env.VITE_ENABLE_ANALYTICS === 'true';
 
-// Analytics is unavailable during server rendering and in some browsers/privacy modes.
-export const analyticsPromise =
-  typeof window === "undefined"
+// Analytics is opt-in and unavailable during server rendering or unsupported browsers.
+export const analyticsPromise = !analyticsEnabled || !firebaseApp || typeof window === "undefined"
     ? Promise.resolve(null)
     : isSupported()
         .then((supported) => (supported ? getAnalytics(firebaseApp) : null))

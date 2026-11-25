@@ -3,11 +3,12 @@ from pydantic import BaseModel, Field
 from passlib.context import CryptContext
 from jose import jwt
 from jose.exceptions import JWTError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 import os
+import logging
 
 from database import User, get_db
 from utils.security import AUTH_COOKIE_DOMAIN, AUTH_COOKIE_SAMESITE, AUTH_COOKIE_SECURE
@@ -19,6 +20,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY or not SECRET_KEY.strip():
+    logging.getLogger("driversafe.config").error("Required configuration variable SECRET_KEY is missing or empty")
     raise RuntimeError("SECRET_KEY must be set to a non-empty value before starting the backend")
 ALGORITHM  = os.getenv("ALGORITHM", "HS256")
 EXPIRE_MIN = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 60))
@@ -79,7 +81,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: timedelta):
     to_encode = data.copy()
-    to_encode.update({"exp": datetime.utcnow() + expires_delta})
+    to_encode.update({"exp": datetime.now(timezone.utc) + expires_delta})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 @router.post("/signup", response_model=TokenResponse)
@@ -89,12 +91,22 @@ def signup(body: SignupRequest, response: Response, db: Session = Depends(get_db
     db.add(user)
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
+        integrity_text = str(exc.orig)
+        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", "") or ""
+        logging.getLogger("driversafe.auth").warning(
+            "Signup database IntegrityError: %s", integrity_text
+        )
+        if "username" in constraint.lower() or "users.username" in integrity_text.lower():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="That username is already taken",
+            ) from exc
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unable to create account with supplied details",
-        )
+        ) from exc
     access_token = create_access_token({"sub": body.username, "name": name}, timedelta(minutes=EXPIRE_MIN))
     set_auth_cookie(response, access_token)
     return {"username": body.username, "name": name}
