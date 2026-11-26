@@ -1,4 +1,4 @@
-"""Replay account-owned feature recordings through the production detector."""
+"""Replay feature-only JSONL recordings through the production detector."""
 
 import csv
 import json
@@ -8,9 +8,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy import select
-
-from database import RecordingFrame, RecordingSession, SessionLocal
 from evaluation.metrics import classification_metrics
 from routers import detection
 from utils.live_session import LiveSession
@@ -18,6 +15,7 @@ from utils.live_session import LiveSession
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RECORDINGS_DIR = Path(__file__).resolve().parent / "recordings"
 HEADS = ("autoencoder", "isolation_forest", "lof", "ensemble", "rules")
 POSITIVE_LABELS = {"drowsy_eyes", "drowsy_yawn", "drowsy_nod"}
 COOLDOWN_SECONDS = detection.ALERT_COOLDOWN_SECONDS
@@ -30,33 +28,31 @@ def _aware(value):
     return value.astimezone(timezone.utc)
 
 
-def load_recorded_sessions():
-    sessions = []
-    with SessionLocal() as db:
-        recordings = db.scalars(select(RecordingSession).order_by(RecordingSession.started_at)).all()
-        for recording in recordings:
-            frames = db.scalars(
-                select(RecordingFrame)
-                .where(RecordingFrame.session_id == recording.id)
-                .order_by(RecordingFrame.timestamp, RecordingFrame.id)
-            ).all()
-            if not frames:
-                continue
-            sessions.append({
-                "session_id": recording.id,
-                "subject_id": recording.subject_id,
-                "metadata": {
-                    "glasses": recording.glasses,
-                    "lighting": recording.lighting,
-                    "camera_angle": recording.camera_angle,
-                },
-                "frames": [{
-                    "timestamp": _aware(frame.timestamp),
-                    "label": frame.label,
-                    "features": frame.features,
-                } for frame in frames],
-            })
-    return sessions
+def load_recorded_sessions(recordings_dir=RECORDINGS_DIR):
+    """Load exported JSONL files (one feature frame per line)."""
+    sessions = {}
+    for path in sorted(Path(recordings_dir).glob("*.jsonl")):
+        with path.open(encoding="utf-8") as source:
+            for line in source:
+                if not line.strip():
+                    continue
+                frame = json.loads(line)
+                session_id = str(frame["session_id"])
+                session = sessions.setdefault(session_id, {
+                    "session_id": session_id,
+                    "subject_id": frame.get("subject_id") or session_id,
+                    "metadata": {
+                        key: frame.get(key)
+                        for key in ("glasses", "lighting", "camera_angle")
+                    },
+                    "frames": [],
+                })
+                session["frames"].append({
+                    "timestamp": _aware(datetime.fromisoformat(frame["timestamp"])),
+                    "label": frame["label"],
+                    "features": frame["features"],
+                })
+    return list(sessions.values())
 
 
 def _replay_session(recording):
@@ -422,7 +418,7 @@ def _flatten_csv(result):
 def evaluate():
     recordings = load_recorded_sessions()
     if not recordings:
-        print("No recording feature frames found. Start and complete a labeled recording before evaluation.")
+        print(f"No JSONL feature recordings found in {RECORDINGS_DIR}.")
         return 2
 
     detection.load_models()

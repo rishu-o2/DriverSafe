@@ -2,9 +2,8 @@ import asyncio
 import os
 import json
 import math
-import logging
 from collections import deque
-from fastapi import APIRouter, Body, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 import numpy as np
 from typing import Dict, Any
@@ -16,11 +15,11 @@ from utils.live_session import (
     record_frame,
     set_session_expiry_handler,
 )
-from utils.security import is_allowed_origin
-from routers.auth import get_current_user, decode_access_token
-from database import Alert, SessionLocal, User, ensure_tables
+from urllib.parse import urlparse
 
 router = APIRouter()
+LOCAL_FRONTEND_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"}
+LOCAL_BACKEND_HOSTS = {"localhost:8000", "127.0.0.1:8000"}
 
 try:
     CALIBRATION_SECONDS = int(os.getenv("CALIBRATION_SECONDS", "30"))
@@ -249,50 +248,36 @@ def _calibrating_result(frame_number, calibration, face_detected):
 def _complete_episode(session, user_id, event):
     if not event:
         return
-    ensure_tables()
-    timestamp = event.get("timestamp")
-    if isinstance(timestamp, str):
-        from datetime import datetime
-        timestamp = datetime.fromisoformat(timestamp)
-    end_timestamp = event.get("end_timestamp")
-    if isinstance(end_timestamp, str):
-        from datetime import datetime
-        end_timestamp = datetime.fromisoformat(end_timestamp)
     scores = event.get("scores") or {}
-    with SessionLocal() as db:
-        alert = db.get(Alert, event.get("id")) if event.get("id") else None
-        if event["action"] == "started" and alert is None:
-            alert = Alert(
-                user_id=user_id,
-                timestamp=timestamp,
-                end_timestamp=None,
-                peak_severity=event.get("peak_severity", 0.0),
-                frame=int(event.get("frame") or 0),
-                state="ongoing",
-                ae_error=float(scores.get("ae_error") or 0),
-                if_score=float(scores.get("if_score") or 0),
-                lof=float(scores.get("lof_score") or 0),
-                confidence=float(scores.get("confidence") or event.get("peak_severity") or 0),
-                models=scores.get("models") or [],
-                votes=int(scores.get("votes") or 0),
-                model_alerts=scores.get("model_alerts") or {},
-                live_signals=scores.get("live_signals") or {},
-            )
-            db.add(alert)
-            db.commit()
-            db.refresh(alert)
-            session.set_active_episode_id(alert.id)
-            event["id"] = alert.id
-        elif event["action"] == "ended" and alert is not None:
-            alert.end_timestamp = end_timestamp
-            alert.peak_severity = event.get("peak_severity", alert.peak_severity)
-            alert.state = "ended"
-            db.commit()
-    event["id"] = event.get("id", event.get("frame", 0))
+    if event["action"] == "started":
+        event["id"] = session.next_episode_id
+        session.next_episode_id += 1
+        session.episode_history.insert(0, {
+            "id": event["id"],
+            "timestamp": event["timestamp"].isoformat(),
+            "end_timestamp": None,
+            "peak_severity": event.get("peak_severity", 0.0),
+            "state": "ongoing",
+            "ae_error": float(scores.get("ae_error") or 0),
+            "if_score": float(scores.get("if_score") or 0),
+            "lof": float(scores.get("lof_score") or 0),
+            "confidence": float(scores.get("confidence") or event.get("peak_severity") or 0),
+            "models": scores.get("models") or [],
+            "frame": int(event.get("frame") or 0),
+            "live_signals": scores.get("live_signals") or {},
+        })
+        del session.episode_history[100:]
+        session.set_active_episode_id(event["id"])
+    elif event["action"] == "ended":
+        row = next((item for item in session.episode_history if item["id"] == event.get("id")), None)
+        if row:
+            row["end_timestamp"] = event["end_timestamp"].isoformat() if event.get("end_timestamp") else None
+            row["peak_severity"] = event.get("peak_severity", row["peak_severity"])
+            row["state"] = "ended"
     event.pop("scores", None)
     event.pop("frame", None)
-    event["timestamp"] = timestamp.isoformat() if timestamp else None
-    event["end_timestamp"] = end_timestamp.isoformat() if end_timestamp else None
+    event["timestamp"] = event["timestamp"].isoformat() if event.get("timestamp") else None
+    event["end_timestamp"] = event["end_timestamp"].isoformat() if event.get("end_timestamp") else None
 
 
 def _persist_expired_session(user_id, session):
@@ -347,7 +332,7 @@ def _lof_decision(values: np.ndarray, model) -> float:
 
 
 @router.get("/status")
-async def get_status(user: User = Depends(get_current_user)) -> Dict[str, str]:
+async def get_status() -> Dict[str, str]:
     return {
         "status": "Detection API is running (live models)" if _MODELS_LOADED else "Detection API is running (temporal rules only; models unavailable)",
         "model_status": "ready" if _MODELS_LOADED else "unavailable",
@@ -355,8 +340,8 @@ async def get_status(user: User = Depends(get_current_user)) -> Dict[str, str]:
     }
 
 
-def _record_live_result(result, user_id):
-    session = get_session(user_id)
+def _record_live_result(result, user_id=None):
+    session = get_session()
     session.record_frame_result(result)
     result["session_frames"] = session.total_predictions
     result["session_drowsy"] = sum(1 for item in session.recent_results if item["is_drowsy"])
@@ -364,7 +349,7 @@ def _record_live_result(result, user_id):
     return result
 
 
-def _synthetic_features(frame_number: int, user_id: int) -> np.ndarray:
+def _synthetic_features(frame_number: int, user_id: int = 0) -> np.ndarray:
     """Deterministic, visibly synthetic alert/drowsy feature stream for demos."""
     phase = frame_number % 80
     is_drowsy = phase >= 60
@@ -377,15 +362,15 @@ def _synthetic_features(frame_number: int, user_id: int) -> np.ndarray:
 
 
 @router.post("/demo/frame")
-def synthetic_demo_frame(payload: dict[str, Any] = Body(...), user: User = Depends(get_current_user)) -> Dict[str, Any]:
+def synthetic_demo_frame(payload: dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """HTTP fallback for deployments where the live WebSocket cannot connect."""
     try:
         frame_number = max(1, int(payload.get("frame", 1)))
     except (TypeError, ValueError):
         frame_number = 1
-    user_id = user.id
-    session = get_session(user_id)
-    features, ground_truth = _synthetic_features(frame_number, user_id)
+    user_id = 0
+    session = get_session()
+    features, ground_truth = _synthetic_features(frame_number)
     tracker = session.get_or_create_detector_tracker(LiveStreamTracker)
     result = process_features(frame_number, features, tracker, session.get_calibration_baseline())
     result.update({
@@ -412,29 +397,16 @@ def synthetic_demo_frame(payload: dict[str, Any] = Body(...), user: User = Depen
 @router.websocket("/ws")
 async def detection_websocket(websocket: WebSocket):
     origin = websocket.headers.get("origin", "")
-    if not origin or not is_allowed_origin(
-        origin,
-        websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", ""),
-        websocket.headers.get("x-forwarded-proto"),
-    ):
-        logging.getLogger("driversafe.security").warning(
-            "Rejected WebSocket origin Origin=%r Host=%r",
-            origin,
-            websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", ""),
-        )
+    request_host = websocket.headers.get("x-forwarded-host") or websocket.headers.get("host", "")
+    scheme = websocket.headers.get("x-forwarded-proto", "https" if websocket.url.scheme == "wss" else "http")
+    origin_parts = urlparse(origin)
+    same_origin = origin_parts.netloc == request_host and origin_parts.scheme == scheme
+    local_dev_proxy = origin in LOCAL_FRONTEND_ORIGINS and request_host in LOCAL_BACKEND_HOSTS
+    if origin and not (same_origin or local_dev_proxy):
         await websocket.close(code=1008, reason="Origin not allowed")
         return
-    ensure_tables()
-    token = websocket.cookies.get("access_token")
-    token_payload = decode_access_token(token) if token else None
-    username = token_payload.get("sub") if token_payload else None
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.username == username).first() if username else None
-        user_id = user.id if user else None
-    if user_id is None:
-        await websocket.close(code=1008, reason="Authentication required")
-        return
-    session = get_session(user_id)
+    user_id = 0
+    session = get_session()
     session.mark_connected()
     await websocket.accept()
     frame_count = session.total_frames
@@ -451,7 +423,7 @@ async def detection_websocket(websocket: WebSocket):
                 raw_features = payload.get("features") if isinstance(payload, dict) else None
                 if synthetic or (isinstance(payload, dict) and payload.get("face_detected") and isinstance(raw_features, list) and len(raw_features) == 20):
                     if synthetic:
-                        features, synthetic_ground_truth = _synthetic_features(frame_count, user_id)
+                        features, synthetic_ground_truth = _synthetic_features(frame_count)
                     else:
                         features = np.asarray(raw_features, dtype=np.float32)
                         synthetic_ground_truth = None

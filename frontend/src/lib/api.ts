@@ -1,6 +1,6 @@
 // Vercel routes /api on the same deployment origin to the backend service.
 // Relative URLs also keep local frontend/backend proxy setups configurable.
-export const BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+export const BASE_URL = "";
 
 // --- API Helpers ---
 
@@ -11,7 +11,7 @@ const getHeaders = (): HeadersInit => {
 };
 
 const apiFetch = (input: RequestInfo | URL, init: RequestInit = {}) =>
-  fetch(input, { credentials: "include", ...init });
+  fetch(input, init);
 
 const formatValidationDetail = (detail: unknown): string | null => {
   if (typeof detail === "string") return detail;
@@ -20,9 +20,7 @@ const formatValidationDetail = (detail: unknown): string | null => {
     if (!issue || typeof issue !== "object") return null;
     const item = issue as { loc?: unknown[]; msg?: unknown; type?: string; ctx?: { min_length?: number } };
     const field = String(item.loc?.at(-1) || "").toLowerCase();
-    const label = field === "password" ? "Password" : field === "username" ? "Username" : field ? field[0].toUpperCase() + field.slice(1) : "Input";
-    if (field === "password" && item.type?.includes("too_short")) return `Password must be at least ${item.ctx?.min_length || 8} characters.`;
-    if (field === "username" && item.type?.includes("too_short")) return `Username must be at least ${item.ctx?.min_length || 3} characters.`;
+    const label = field ? field[0].toUpperCase() + field.slice(1) : "Input";
     if (item.type === "missing") return `${label} is required.`;
     if (typeof item.msg === "string") return `${label}: ${item.msg.replace(/^Value error,\s*/i, "")}.`;
     return null;
@@ -37,16 +35,12 @@ const apiError = async (response: Response) => {
   }
   try {
     const errorData = await response.clone().json();
-    if (response.status === 401) return "Invalid username or password";
     if (response.status === 422) return formatValidationDetail(errorData.detail) || "Check the fields and try again.";
-    if (response.status === 403) {
-      return `${formatValidationDetail(errorData.detail) || "Request blocked"}. Check that the server is running and the site origin is configured.`;
-    }
+    if (response.status === 403) return "Request blocked by the server.";
     if (response.status >= 500) return "The server could not complete the request. Check that the server is running.";
     return formatValidationDetail(errorData.detail) || (typeof errorData.message === "string" ? errorData.message : "Request could not be completed. Try again.");
   } catch {
-    if (response.status === 401) return "Invalid username or password";
-    if (response.status === 403) return "Request blocked. Check that the server is running and the site origin is configured.";
+    if (response.status === 403) return "Request blocked by the server.";
     if (response.status >= 500) return "The server could not complete the request. Check that the server is running.";
     return "Request could not be completed. Try again.";
   }
@@ -63,41 +57,6 @@ const handleResponse = async (response: Response) => {
   }
   if (response.status === 204) return undefined;
   return response.json();
-};
-
-// --- Auth Functions ---
-
-export interface AuthResponse {
-  username: string;
-  name?: string;
-}
-
-export const login = async (username: string, password: string): Promise<AuthResponse> => {
-  const response = await apiFetch(`${BASE_URL}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-  return handleResponse(response);
-};
-
-export const signup = async (username: string, password: string): Promise<AuthResponse> => {
-  const response = await apiFetch(`${BASE_URL}/api/auth/signup`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-  return handleResponse(response);
-};
-
-export const getCurrentUser = async (): Promise<AuthResponse> => {
-  const response = await apiFetch(`${BASE_URL}/api/auth/me`);
-  return handleResponse(response);
-};
-
-export const logout = async (): Promise<void> => {
-  const response = await apiFetch(`${BASE_URL}/api/auth/logout`, { method: "POST" });
-  if (!response.ok) throw new Error(await apiError(response));
 };
 
 // --- Metrics Functions ---
@@ -396,7 +355,6 @@ export interface DetectionFrameResponse {
   source?: "camera" | "synthetic";
   synthetic_ground_truth?: boolean;
   alert_event?: boolean;
-  recording_protocol?: RecordingStatus | null;
   episode_event?: {
     action: "started" | "ended";
     id: number | null;
@@ -406,78 +364,6 @@ export interface DetectionFrameResponse {
     alert_event: boolean;
   };
 }
-
-export interface RecordingStatus {
-  active: boolean;
-  session_id: string | null;
-  subject_id: string | null;
-  label: string | null;
-  step: number | null;
-  step_count?: number;
-  instruction: string | null;
-  seconds_remaining: number;
-}
-
-export interface RecordingProtocol {
-  consent_notice: string;
-  labels: string[];
-  steps: Array<{ label: string; instruction: string; duration_seconds: number }>;
-  lighting_options: string[];
-  camera_angle_options: string[];
-}
-
-export const getRecordingProtocol = async (): Promise<RecordingProtocol> => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings/protocol`, { headers: getHeaders() });
-  return handleResponse(response);
-};
-
-export const getCurrentRecording = async (): Promise<RecordingStatus> => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings/current`, { headers: getHeaders() });
-  return handleResponse(response);
-};
-
-export const startRecording = async (input: {
-  consent_accepted: boolean;
-  glasses: boolean;
-  lighting: string;
-  camera_angle: string;
-}): Promise<RecordingStatus> => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings/start`, {
-    method: "POST", headers: getHeaders(), body: JSON.stringify(input),
-  });
-  return handleResponse(response);
-};
-
-export const stopRecording = async (): Promise<RecordingStatus> => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings/stop`, { method: "POST", headers: getHeaders() });
-  return handleResponse(response);
-};
-
-export const setCurrentRecordingLabel = async (label: string): Promise<RecordingStatus> => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings/current/label`, {
-    method: "POST", headers: getHeaders(), body: JSON.stringify({ label }),
-  });
-  return handleResponse(response);
-};
-
-export const listRecordings = async () => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings`, { headers: getHeaders() });
-  return handleResponse(response);
-};
-
-export const exportRecording = async (sessionId: string): Promise<Blob> => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings/${encodeURIComponent(sessionId)}/export`);
-  if ((response.headers.get("content-type") || "").includes("text/html")) {
-    throw new Error("The server did not respond correctly. Check the deployment routing.");
-  }
-  if (!response.ok) throw new Error(await apiError(response));
-  return response.blob();
-};
-
-export const deleteRecording = async (sessionId: string): Promise<void> => {
-  const response = await apiFetch(`${BASE_URL}/api/recordings/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-  if (!response.ok) throw new Error(await apiError(response));
-};
 
 export const getDetectionStatus = async (): Promise<DetectionStatus> => {
   const response = await apiFetch(`${BASE_URL}/api/detection/status`, { headers: getHeaders() });
@@ -500,9 +386,9 @@ export class DetectionWebSocket {
     }
     
     // The same-origin Vercel route sends this handshake to the backend service.
-    const apiBase = BASE_URL || window.location.origin;
+    const apiBase = window.location.origin;
     const defaultWsBase = apiBase.replace(/^https:/, "wss:").replace(/^http:/, "ws:");
-    const wsBase = (import.meta.env.VITE_WS_URL || defaultWsBase).replace(/\/$/, "");
+    const wsBase = defaultWsBase.replace(/\/$/, "");
     const wsUrl = `${wsBase}/api/detection/ws`;
     this.ws = new WebSocket(wsUrl);
     this.ws.onopen = () => onOpen?.();

@@ -1,4 +1,4 @@
-"""In-process live state keyed by authenticated user, for a single backend instance."""
+"""In-process shared state for the public demo, scoped to one backend instance."""
 
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
@@ -8,7 +8,7 @@ from time import monotonic, time
 import numpy as np
 
 
-SESSION_TTL_SECONDS = 30 * 60
+SESSION_TTL_SECONDS = float("inf")
 DISCONNECT_GRACE_SECONDS = 30
 MAX_USER_SESSIONS = 1000
 MIN_CALIBRATION_FRAMES = 100
@@ -36,6 +36,8 @@ class LiveSession:
         self.calibration_baseline = None
         self.detector_tracker = None
         self.active_episode = None
+        self.episode_history = []
+        self.next_episode_id = 1
         self.last_alert_event_clock = None
         self.disconnected_at_clock = None
 
@@ -328,22 +330,20 @@ def _remove_expired_sessions(now: float):
 
 
 def get_session(user_id: int | None = None, session_id: str | None = None) -> LiveSession:
-    """Return the live session for one user; session_id remains accepted for compatibility."""
-    if user_id is None:
-        # A caller without an authenticated user gets isolated, non-shared state.
-        return LiveSession()
+    """Return the one shared demo session; legacy arguments are ignored."""
 
     now = monotonic()
     expired = []
     with _sessions_lock:
         expired = _remove_expired_sessions(now)
-        entry = _sessions.get(int(user_id))
+        key = 0
+        entry = _sessions.get(key)
         if entry is None:
             entry = (LiveSession(), now)
         else:
             entry = (entry[0], now)
-        _sessions[int(user_id)] = entry
-        _sessions.move_to_end(int(user_id))
+        _sessions[key] = entry
+        _sessions.move_to_end(key)
         while len(_sessions) > MAX_USER_SESSIONS:
             expired_user_id, (expired_session, _) = _sessions.popitem(last=False)
             expired.append((expired_user_id, expired_session))
@@ -355,24 +355,19 @@ def get_session(user_id: int | None = None, session_id: str | None = None) -> Li
 
 
 def reset_session(user_id: int | None = None, session_id: str | None = None) -> None:
-    """Reset one user's state; session_id remains accepted for compatibility."""
-    if user_id is None:
-        return
+    """Reset the shared demo state; legacy arguments are ignored."""
     with _sessions_lock:
-        _sessions[int(user_id)] = (LiveSession(), monotonic())
-        _sessions.move_to_end(int(user_id))
+        _sessions[0] = (LiveSession(), monotonic())
+        _sessions.move_to_end(0)
 
 
 def record_frame(features=None, is_alert=False, user_id=None, session_id=None):
-    if user_id is not None:
-        get_session(user_id).record_frame(features, is_alert)
+    get_session().record_frame(features, is_alert)
 
 
 def get_features(user_id=None, session_id=None):
-    return get_session(user_id).get_features() if user_id is not None else []
+    return get_session().get_features()
 
 
 def get_stats(user_id=None, session_id=None):
-    if user_id is None:
-        return {"total_frames": 0, "alert_frames": 0, "face_frames": 0, "session_started_at": None, "session_seconds": 0}
-    return get_session(user_id).get_stats()
+    return get_session().get_stats()

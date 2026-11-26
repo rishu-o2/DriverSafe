@@ -4,9 +4,7 @@ import os
 from typing import Any, Dict
 
 import numpy as np
-from fastapi import APIRouter, Depends
-from routers.auth import get_current_user
-from database import User
+from fastapi import APIRouter
 
 from utils.live_session import get_features
 from utils.numpy_ml import (
@@ -71,7 +69,7 @@ def _project(values: np.ndarray) -> tuple[np.ndarray, list[float]]:
 
 
 @router.get("/pca")
-async def get_pca(user: User = Depends(get_current_user)) -> Dict[str, Any]:
+async def get_pca() -> Dict[str, Any]:
     if not len(_X_real):
         return {"points": [], "variance_explained": []}
     points_2d, variance = _project(_X_real)
@@ -80,7 +78,7 @@ async def get_pca(user: User = Depends(get_current_user)) -> Dict[str, Any]:
 
 
 @router.get("/kmeans")
-async def get_kmeans(user: User = Depends(get_current_user)) -> Dict[str, Any]:
+async def get_kmeans() -> Dict[str, Any]:
     if not len(_X_real):
         return {"elbow": [], "optimal_k": 0, "silhouette_score": None, "davies_bouldin_score": None, "wcss": None, "labels": []}
     scaled = _scaled(_X_real)
@@ -97,7 +95,7 @@ async def get_kmeans(user: User = Depends(get_current_user)) -> Dict[str, Any]:
 
 
 @router.get("/dbscan")
-async def get_dbscan(user: User = Depends(get_current_user)) -> Dict[str, Any]:
+async def get_dbscan() -> Dict[str, Any]:
     if not len(_X_real):
         return {"labels": [], "noise_count": 0, "core_count": 0, "n_clusters": 0}
     labels = dbscan(_scaled(_X_real), eps=0.8, min_samples=10)
@@ -106,7 +104,7 @@ async def get_dbscan(user: User = Depends(get_current_user)) -> Dict[str, Any]:
 
 
 @router.get("/hierarchical")
-async def get_hierarchical(user: User = Depends(get_current_user)) -> Dict[str, Any]:
+async def get_hierarchical() -> Dict[str, Any]:
     if not len(_X_real):
         return {"labels": [], "silhouette_score": None, "davies_bouldin_score": None}
     scaled = _scaled(_X_real)
@@ -115,7 +113,7 @@ async def get_hierarchical(user: User = Depends(get_current_user)) -> Dict[str, 
 
 
 @router.get("/validation")
-async def get_validation(user: User = Depends(get_current_user)) -> Dict[str, Any]:
-    result = await get_kmeans(user)
+async def get_validation() -> Dict[str, Any]:
+    result = await get_kmeans()
     result["wcss_list"] = result["elbow"]
     return result

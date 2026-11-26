@@ -25,8 +25,8 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Link, useLocation } from 'wouter';
-import { getCurrentUser, logout, resetLiveSession, type AuthResponse } from '../lib/api';
+import { Link } from 'wouter';
+import { resetLiveSession } from '../lib/api';
 import { useDetection } from '../hooks/useApi';
 import { createFaceLandmarker, extractFaceFeatures } from '../lib/face-landmarks';
 
@@ -83,20 +83,6 @@ export default function Dashboard() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const detection = useDetection();
   const [sessionSeconds, setSessionSeconds] = useState(0);
-  const [account, setAccount] = useState<AuthResponse | null>(null);
-  const [, setLocation] = useLocation();
-
-  useEffect(() => { getCurrentUser().then(setAccount).catch(() => setLocation('/login')); }, [setLocation]);
-
-  const handleLogout = async () => {
-    try {
-      await logout();
-      setLocation('/login');
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Logout failed');
-    }
-  };
-
   useEffect(() => {
     if (!detection.isConnected && detection.streamSource !== 'synthetic') return;
 
@@ -136,10 +122,10 @@ export default function Dashboard() {
         </div>
 
         <div className="dashboard-profile">
-          <div className="dashboard-avatar" aria-hidden="true">{(account?.name || account?.username || 'U').slice(0, 2).toUpperCase()}</div>
+          <div className="dashboard-avatar" aria-hidden="true">DS</div>
           <div>
-            <strong>{account?.name || account?.username || 'Account'}</strong>
-            <span>Private account session</span>
+            <strong>Public demo</strong>
+            <span>Shared in-memory session</span>
           </div>
           <span className="dashboard-profile-dot" aria-label="Profile active" />
         </div>
@@ -181,7 +167,7 @@ export default function Dashboard() {
               <span>Session · {sessionDuration}</span>
             </div>
           </div>
-          <button type="button" className="dashboard-nav-item" onClick={handleLogout} data-testid="button-logout">Log out</button>
+          <span className="dashboard-demo-reset-note">Demo: history resets on restart</span>
         </div>
       </aside>
 
@@ -204,7 +190,7 @@ export default function Dashboard() {
               <span className={`dashboard-live-dot${detection.isConnected ? '' : ' is-offline'}`} aria-hidden="true" />
               {sessionStatus}
             </div>
-            <span className="dashboard-session-code">{detection.streamSource === 'synthetic' ? 'SYNTHETIC SOURCE' : 'CAMERA SOURCE'}</span>
+          <span className="dashboard-session-code">{detection.streamSource === 'synthetic' ? 'source: synthetic' : 'source: camera'}</span>
           </div>
         </header>
 
@@ -829,7 +815,7 @@ function AlertHistory({ detection, sessionDuration }: { detection: ReturnType<ty
         </div>
       </DashboardPanel>
       <div className="dashboard-history-grid">
-        <DashboardPanel title="Alert Frequency" eyebrow="Account history · 10 minute windows">
+        <DashboardPanel title="Alert Frequency" eyebrow="Demo history · 10 minute windows">
           <div className="dashboard-chart dashboard-chart--frequency">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={frequency}>
@@ -894,7 +880,7 @@ function SettingsPanel() {
         </button>
         {resetStatus && <small role="status">{resetStatus}</small>}
       </section>
-      <div className="dashboard-settings-note"><ShieldCheck aria-hidden="true" /><span>Monitoring remains local to this session until a camera source is connected.</span></div>
+      <div className="dashboard-settings-note"><ShieldCheck aria-hidden="true" /><span>Demo: history resets on restart. All visitors share this in-memory session.</span></div>
     </div>
   );
 }

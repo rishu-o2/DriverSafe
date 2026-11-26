@@ -1,16 +1,14 @@
 import json
 import os
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from utils.live_session import get_session, reset_session
-from routers.auth import get_current_user
-from database import User
 
 router = APIRouter()
 RESULTS_PATH = os.path.join(os.path.dirname(__file__), "..", "saved_models", "results.json")
 
 
-def _session_for(user_id):
-    return get_session(user_id)
+def _session_for():
+    return get_session()
 
 def _load_results():
     try:
@@ -56,12 +54,12 @@ def _confusion_data(results):
 
 
 @router.get("/clustering")
-def get_clustering_metrics(user: User = Depends(get_current_user)):
+def get_clustering_metrics():
     return _load_results().get("clustering", {"silhouette": None, "davies_bouldin": None, "wcss": None, "optimal_k": None, "wcss_list": []})
 
 
 @router.get("/detection")
-async def get_detection_metrics(user: User = Depends(get_current_user)) -> dict:
+async def get_detection_metrics() -> dict:
     d = _load_results().get("detection", {})
     if not d:
         return {"f1_score": None, "roc_auc": None, "precision": None, "recall": None, "accuracy": None}
@@ -75,30 +73,30 @@ async def get_detection_metrics(user: User = Depends(get_current_user)) -> dict:
 
 
 @router.get("/confusion")
-def get_confusion_matrix(user: User = Depends(get_current_user)):
+def get_confusion_matrix():
     return _confusion_data(_load_results())
 
 
 @router.get("/roc")
-async def get_roc_curve(user: User = Depends(get_current_user)) -> dict:
+async def get_roc_curve() -> dict:
     return _roc_data(_load_results())
 
 
 @router.get("/all")
-def get_all_metrics(user: User = Depends(get_current_user)):
+def get_all_metrics():
     results = _load_results()
     return {
         "clustering": results.get("clustering", {"silhouette": None, "davies_bouldin": None, "wcss": None, "optimal_k": None, "wcss_list": []}),
         "detection": _detection_data(results),
         "confusion": results.get("confusion", {"tp": None, "fp": None, "fn": None, "tn": None}),
         "roc": _roc_data(results),
-        "live": get_live_metrics(user),
+        "live": get_live_metrics(),
     }
 
 
 @router.get("/live")
-def get_live_metrics(user: User = Depends(get_current_user)):
-    session = _session_for(user.id)
+def get_live_metrics():
+    session = _session_for()
     live = session.compute_live_metrics() if session else None
     live_frames = len(session.recent_results) if session else 0
     if live is not None:
@@ -127,8 +125,8 @@ def get_live_metrics(user: User = Depends(get_current_user)):
 
 
 @router.get("/live/roc")
-def get_live_roc(user: User = Depends(get_current_user)):
-    session = _session_for(user.id)
+def get_live_roc():
+    session = _session_for()
     roc = session.compute_live_roc() if session else None
     if roc is not None:
         return {**roc, "source": "live", "metric_kind": "live_stream_summary"}
@@ -136,14 +134,14 @@ def get_live_roc(user: User = Depends(get_current_user)):
 
 
 @router.get("/live/timeline")
-def get_live_timeline(user: User = Depends(get_current_user)):
-    session = _session_for(user.id)
+def get_live_timeline():
+    session = _session_for()
     timeline = session.get_live_ae_timeline() if session else []
     threshold = timeline[-1]["threshold"] if timeline else None
     return {"timeline": timeline, "threshold": threshold}
 
 
 @router.post("/reset")
-def reset_live_metrics(user: User = Depends(get_current_user)):
-    reset_session(user.id)
+def reset_live_metrics():
+    reset_session()
     return {"status": "session reset", "message": "Live metrics cleared"}

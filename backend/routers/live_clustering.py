@@ -2,9 +2,7 @@ import os
 from typing import Any
 
 import numpy as np
-from fastapi import APIRouter, Depends
-from routers.auth import get_current_user
-from database import User
+from fastapi import APIRouter
 
 from utils.live_session import get_session
 from utils.numpy_ml import (
@@ -35,13 +33,13 @@ def _scale(values: np.ndarray) -> np.ndarray:
     return standardize(values, mean, scale)
 
 
-def _user_features(user_id):
-    return get_session(user_id).get_features()
+def _user_features():
+    return get_session().get_features()
 
 
 @router.get("/live")
-def get_live_clusters(user: User = Depends(get_current_user)) -> dict[str, Any]:
-    features = _user_features(user.id)
+def get_live_clusters() -> dict[str, Any]:
+    features = _user_features()
     if len(features) < 3:
         return {"points": [], "count": len(features), "source": "live"}
     values = np.asarray(features, dtype=np.float64)
@@ -63,8 +61,8 @@ def get_live_clusters(user: User = Depends(get_current_user)) -> dict[str, Any]:
 
 
 @router.get("/live/validation")
-def get_live_cluster_validation(user: User = Depends(get_current_user)) -> dict[str, Any]:
-    features = _user_features(user.id)
+def get_live_cluster_validation() -> dict[str, Any]:
+    features = _user_features()
     if len(features) < 10:
         return {"silhouette_score": None, "davies_bouldin_score": None, "source": "live", "count": len(features)}
     scaled = _scale(np.asarray(features, dtype=np.float64))
